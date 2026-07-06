@@ -48,6 +48,14 @@ impl Expansion for MatMulNBits {
         "MatMulNBits".into()
     }
 
+    fn is_stateless(&self) -> bool {
+        // Report not-stateless so type-inference skips its eager const-eval: for a MatMulNBits with
+        // constant inputs that path builds + optimizes a throwaway per-op model (packing the Q4_0
+        // weight) ~2.7s each — 40s+ across the graph. Folding is deferred to into_optimized, which
+        // packs all weights together in ~1.4s. (The op has no state; this only gates eager eval.)
+        false
+    }
+
     fn rules<'r, 'p: 'r, 's: 'r>(
         &'s self,
         s: &mut Solver<'r>,
@@ -115,20 +123,28 @@ impl Expansion for MatMulNBits {
             None => None,
         };
 
-        // Dequantize to a [N, K] float weight; also keep the raw nibbles (logical row-major)
-        // so the block-quant path can reuse the original int4 values without re-quantizing.
-        let mut w = vec![0f32; n * k];
+        // Keep the raw nibbles (logical row-major). The Q4_0 block-quant path re-packs directly from
+        // them + scales, so it never needs the dequantized f32 weight. Building that weight
+        // unconditionally (n*k f32 per op x 154 ops) was the bulk of the int4 into_typed cost, so we
+        // only materialize it for the f32 fallback path.
+        let q4_path = block_size == 32 && self.zp_input.is_none() && k % 32 == 0;
+        let mut w = if q4_path { Vec::new() } else { vec![0f32; n * k] };
         let mut q_logical = vec![0u8; n * k];
         for col in 0..n {
             for blk in 0..n_blocks {
-                let scale = scales[col * n_blocks + blk];
-                let zero = match zp {
-                    Some(zp) => {
-                        let byte = zp[col * zp_blob + blk / 2];
-                        if blk % 2 == 0 { byte & 0x0F } else { byte >> 4 }
-                    }
-                    None => 8,
-                } as f32;
+                let (scale, zero) = if q4_path {
+                    (0f32, 0f32)
+                } else {
+                    let scale = scales[col * n_blocks + blk];
+                    let zero = match zp {
+                        Some(zp) => {
+                            let byte = zp[col * zp_blob + blk / 2];
+                            if blk % 2 == 0 { byte & 0x0F } else { byte >> 4 }
+                        }
+                        None => 8,
+                    } as f32;
+                    (scale, zero)
+                };
                 let base = col * n_blocks * blob + blk * blob;
                 for i in 0..block_size {
                     let kk = blk * block_size + i;
@@ -138,7 +154,9 @@ impl Expansion for MatMulNBits {
                     let byte = b[base + i / 2];
                     let nib = if i % 2 == 0 { byte & 0x0F } else { byte >> 4 };
                     q_logical[col * k + kk] = nib;
-                    w[col * k + kk] = (nib as f32 - zero) * scale;
+                    if !q4_path {
+                        w[col * k + kk] = (nib as f32 - zero) * scale;
+                    }
                 }
             }
         }
@@ -153,7 +171,7 @@ impl Expansion for MatMulNBits {
         // Q4_0 block-quant format: the weight stays int4 in memory and is dequantized inside the
         // matmul packer, instead of materializing a full f32 weight. Anything else (other block
         // sizes, asymmetric zero points, a partial last block) falls back to the f32 weight.
-        let y = if block_size == 32 && self.zp_input.is_none() && k % 32 == 0 {
+        let y = if q4_path {
             let weights = Q4_0.pack_prequantized(&q_logical, scales, n, k)?;
             let bqs = BlockQuantStorage::new(Box::new(Q4_0), n, k, Arc::new(weights))?;
             let fact = Box::new(BlockQuantFact::new(Box::new(Q4_0), tvec!(1, n, k)));
