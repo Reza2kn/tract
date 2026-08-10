@@ -58,6 +58,9 @@ impl Expansion for Range {
             inputs.iter().map(|o| model.outlet_fact(*o).unwrap().datum_type),
         )
         .context("No supertype for inputs")?;
+        // A symbolic TDim supertype would type the Range output as TDim, but Range always
+        // materializes concrete integer outputs (I64). Emit I64 so downstream facts unify.
+        let dt = if dt == TDim::datum_type() { i64::datum_type() } else { dt };
         let inputs = wire_cast(prefix, model, inputs, dt)?;
         let len = model.symbols.new_with_prefix("range");
         model.wire_node(prefix, tract_core::ops::array::Range::new(len.into()), &inputs)

@@ -54,14 +54,9 @@ impl Expansion for Clip11 {
             1 + self.input_min.is_some() as usize + self.input_max.is_some() as usize,
         )?;
         check_output_arity(outputs, 1)?;
-        if let Some(input) = self.input_min {
-            s.equals(&inputs[0].datum_type, &inputs[input].datum_type)?;
-        }
-        if let Some(input) = self.input_max {
-            s.equals(&inputs[0].datum_type, &inputs[input].datum_type)?;
-        }
-        s.equals(&inputs[0].datum_type, &outputs[0].datum_type)?;
-        s.equals(&inputs[0].shape, &outputs[0].shape)?;
+        // Relaxed for streaming cache-len clamps: bounds may be I64 constants while the
+        // clamped value is a symbolic TDim and shapes may differ in rank (scalar vs [1]).
+        // wire() casts the bounds to the input dtype and materializes symbolic clamps as I64.
         Ok(())
     }
 
@@ -71,21 +66,36 @@ impl Expansion for Clip11 {
         model: &mut TypedModel,
         inputs: &[OutletId],
     ) -> TractResult<TVec<OutletId>> {
+        let dt = model.outlet_fact(inputs[0])?.datum_type;
         let mut wire = inputs[0];
+        // Clamping a symbolic TDim value whose consumers expect concrete I64: materialize
+        // the clamp in the I64 domain so the wired output matches the downstream fact.
+        if dt == TDim::datum_type() {
+            wire = model.wire_node(format!("{name}.symbol.cast"), tract_core::ops::cast::cast(i64::datum_type()), &[wire])?[0];
+        }
+        let dt = model.outlet_fact(wire)?.datum_type;
         if let Some(min) = self.input_min {
+            let mut b = inputs[min];
+            if model.outlet_fact(b)?.datum_type != dt {
+                b = model.wire_node(format!("{name}.min.cast"), tract_core::ops::cast::cast(dt), &[b])?[0];
+            }
             wire = wire_with_rank_broadcast(
                 format!("{name}.min"),
                 model,
                 tract_hir::ops::math::max(),
-                &[wire, inputs[min]],
+                &[wire, b],
             )?[0];
         }
         if let Some(max) = self.input_max {
+            let mut b = inputs[max];
+            if model.outlet_fact(b)?.datum_type != dt {
+                b = model.wire_node(format!("{name}.max.cast"), tract_core::ops::cast::cast(dt), &[b])?[0];
+            }
             wire = wire_with_rank_broadcast(
                 format!("{name}.max"),
                 model,
                 tract_hir::ops::math::min(),
-                &[wire, inputs[max]],
+                &[wire, b],
             )?[0];
         }
         Ok(tvec!(wire))

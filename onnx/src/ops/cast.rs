@@ -13,10 +13,11 @@ fn cast(
     _ctx: &ParsingContext,
     node: &NodeProto,
 ) -> TractResult<(Box<dyn InferenceOp>, Vec<String>)> {
-    let mut to = node.get_attr::<DatumType>("to")?;
-    if to == i64::datum_type() {
-        to = TDim::datum_type();
-    }
+    let to = node.get_attr::<DatumType>("to")?;
+    // Note: upstream maps i64 casts to TDim (symbolic dims). Shenava keeps i64
+    // concrete: the Koochik exports cast run-time lengths to i64 and tract must
+    // not reinterpret them as symbolic dimensions.
+
     Ok((ElementWiseOp(Box::new(Cast::new(to)), None).into_hir(), vec![]))
 }
 
@@ -66,7 +67,7 @@ impl ElementWiseMiniOp for Cast {
         node: &TypedNode,
     ) -> TractResult<Option<TypedModelPatch>> {
         let from = model.outlet_fact(node.inputs[0])?.datum_type;
-        if from == self.to || (from == TDim::datum_type() && self.to == i32::datum_type()) {
+        if from == self.to {
             Ok(Some(TypedModelPatch::replace_single_op(model, node, &node.inputs, Identity)?))
         } else if from == String::datum_type() && self.to == f32::datum_type() {
             Ok(None)
