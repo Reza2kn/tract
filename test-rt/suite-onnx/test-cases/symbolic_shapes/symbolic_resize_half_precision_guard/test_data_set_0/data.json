@@ -1,0 +1,8 @@
+{
+  "input": [
+    {"dtype": 7, "shape": [], "values": [5000]}
+  ],
+  "output": [
+    {"dtype": 1, "shape": [], "values": [12497183.0]}
+  ]
+}

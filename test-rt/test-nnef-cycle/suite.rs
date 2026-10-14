@@ -14,7 +14,8 @@ pub fn suite() -> &'static infra::TestSuite {
 /// Serialization cases requiring only the default core NNEF registry.
 pub fn core_suite() -> infra::TestSuite {
     let mut suite = infra::TestSuite::default()
-        .with("clamped_swiglu", suite_unit::clamped_swiglu::suite().unwrap());
+        .with("clamped_swiglu", suite_unit::clamped_swiglu::suite().unwrap())
+        .with("serialization", suite_unit::serialization::suite());
     suite.skip(&|path| path.last().is_some_and(|name| name == "contract"));
     suite
 }

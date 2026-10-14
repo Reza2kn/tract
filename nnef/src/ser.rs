@@ -1,6 +1,7 @@
 use crate::ast::dump::is_direct_identifier;
 use crate::ast::*;
 use crate::internal::*;
+use std::collections::HashSet;
 use tract_core::ndarray::ArrayViewD;
 use tract_core::ndarray::Axis;
 use tract_core::ops::cnn::conv::{rewrite_kernel_conv_in_oihw, rewrite_kernel_deconv_in_oihw};
@@ -76,6 +77,8 @@ pub struct IntoAst<'a> {
     pub resources: HashMap<String, Arc<dyn Resource>>,
     pub fragments: HashMap<Identifier, FragmentDef>,
     pub body: Vec<Assignment>,
+    assigned_names: HashSet<Vec<u8>>,
+    tensor_ids: HashMap<Identifier, Identifier>,
 }
 
 pub struct RequiredTensorParameter {
@@ -99,6 +102,8 @@ impl<'a> IntoAst<'a> {
             fragments: Default::default(),
             body: Default::default(),
             parent: None,
+            assigned_names: Default::default(),
+            tensor_ids: Default::default(),
         }
     }
 
@@ -146,7 +151,7 @@ impl<'a> IntoAst<'a> {
         let mut tensor_params = vec![];
         for (name, t) in &self.tensors {
             tensor_params.push(RequiredTensorParameter {
-                parameter_id: self.scoped_id(name),
+                parameter_id: self.tensor_ids[name].clone(),
                 label: name.clone(),
                 value: t.clone(),
             })
@@ -261,17 +266,19 @@ impl<'a> IntoAst<'a> {
                     required_registries.push(&reg.id);
                     continue;
                 };
-                let scoped = self.scoped_id(&node.name);
                 let names: Vec<_> = (0..node.outputs.len())
                     .map(|ix| {
-                        if ix > 0 {
-                            Identifier(format!("{}_{}", scoped.0, ix))
+                        self.scoped_id(if ix == 0 {
+                            node.name.clone()
                         } else {
-                            scoped.clone()
-                        }
+                            format!("{}_{}", node.name, ix)
+                        })
                     })
                     .collect();
                 if node.outputs.len() > 1 {
+                    for name in &names {
+                        self.assigned_names.insert(self.serialized_name(&name.0));
+                    }
                     self.body.push(Assignment {
                         left: LValue::Tuple(
                             names.iter().map(|n| LValue::Identifier(n.clone())).collect(),
@@ -313,19 +320,35 @@ impl<'a> IntoAst<'a> {
         }
     }
 
-    /// Names a tensor without shadowing a symbolic dimension in the NNEF scope.
+    /// Names a tensor without shadowing a dimension or a previously assigned tensor.
     pub fn scoped_id(&self, name: impl AsRef<str>) -> Identifier {
         let name = name.as_ref().to_string();
-        if self.model.symbols.get(&name).is_none() {
+        let used = |name: &str| {
+            let serialized = self.serialized_name(name);
+            self.model.symbols.get(name).is_some()
+                || self.model.symbols.get(std::str::from_utf8(&serialized).unwrap()).is_some()
+                || self.assigned_names.contains(&serialized)
+        };
+        if !used(&name) {
             return Identifier(name);
         }
         let mut candidate = format!("{name}_tensor");
-        while self.model.symbols.get(&candidate).is_some()
-            || self.model.node_by_name(&candidate).is_ok()
-        {
+        while used(&candidate) || self.model.node_by_name(&candidate).is_ok() {
             candidate.push('_');
         }
         Identifier(candidate)
+    }
+
+    fn serialized_name(&self, name: &str) -> Vec<u8> {
+        let mut serialized = vec![];
+        crate::ast::dump::write_identifier(
+            &mut serialized,
+            &Identifier(name.into()),
+            self.framework.allow_extended_identifier_syntax,
+            false,
+        )
+        .unwrap();
+        serialized
     }
 
     pub fn force_variable(&mut self, name: impl AsRef<str>, exp: &Arc<RValue>) -> Arc<RValue> {
@@ -448,6 +471,7 @@ impl<'a> IntoAst<'a> {
 
         self.tensors.insert(name.clone(), tensor.clone());
         let id = self.scoped_id(&name);
+        self.tensor_ids.insert(name.clone(), id.clone());
         let shape = tensor.shape().to_vec();
         self.assignment(
             id.clone(),
@@ -472,6 +496,7 @@ impl<'a> IntoAst<'a> {
         if *right == ident(name) {
             return;
         }
+        self.assigned_names.insert(self.serialized_name(name));
         self.body.push(assignment(name, right))
     }
 }

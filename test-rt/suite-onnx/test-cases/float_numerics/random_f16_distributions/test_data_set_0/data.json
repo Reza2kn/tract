@@ -1,0 +1,17 @@
+{
+  "input": [
+    {"dtype": 10, "shape": [16384], "values": [0.0]}
+  ],
+  "output": [
+    {"dtype": 9, "shape": [], "values": [true]},
+    {"dtype": 9, "shape": [], "values": [true]},
+    {"dtype": 9, "shape": [], "values": [true]},
+    {"dtype": 9, "shape": [], "values": [true]},
+    {"dtype": 9, "shape": [], "values": [true]},
+    {"dtype": 9, "shape": [], "values": [true]},
+    {"dtype": 9, "shape": [], "values": [true]},
+    {"dtype": 9, "shape": [], "values": [true]},
+    {"dtype": 9, "shape": [], "values": [true]},
+    {"dtype": 9, "shape": [], "values": [true]}
+  ]
+}

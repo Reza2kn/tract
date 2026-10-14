@@ -1,0 +1,10 @@
+{
+  "input": [
+    {"dtype": 1, "shape": [2, 1, 3], "values": [0.0]}
+  ],
+  "output": [
+    {"dtype": 1, "shape": [2, 1, 1, 2], "values": [0.0]},
+    {"dtype": 1, "shape": [1, 1, 2], "values": [0.0]},
+    {"dtype": 1, "shape": [1, 1, 2], "values": [0.0]}
+  ]
+}

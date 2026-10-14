@@ -1,3 +1,6 @@
+mod generated;
+mod regressions;
+
 use log::*;
 use prost::Message;
 use regex::Regex;
@@ -338,107 +341,8 @@ fn full() -> TestSuite {
         }
         suite.add(tests_set.replace('-', "_"), tags);
     }
-    let mut quantized_convolution = TestSuite::default();
-    for name in ["qlinear_types", "qlinear_grouped", "integer_defaults"] {
-        quantized_convolution.add(
-            name,
-            OnnxTestCase {
-                path: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                    .join("test-cases/quantized-convolution")
-                    .join(name),
-                ignore_output_type: false,
-                ignore_output_shapes: false,
-                input: None,
-                exact: true,
-                approximation: None,
-                transform: None,
-            },
-        );
-    }
-    suite.add("quantized_convolution", quantized_convolution);
-    let mut kokoro_ops = TestSuite::default();
-    for name in [
-        "quantized_uint8",
-        "quantized_int8",
-        "fused_matmul",
-        "stft_real_rank2",
-        "stft_frame20",
-        "dynamic_range_resize",
-        "quantized_matmul_axes",
-        "symbolic_slice_bounds",
-        "dynamic_lstm_int8",
-        "dynamic_lstm_uint8",
-        "dynamic_lstm_zero",
-        "nonfinite_quantization",
-        "kokoro_phase_zero",
-        "dynamic_quantize_zero",
-        "fast_gelu_tails",
-        "fast_gelu_nonfinite",
-        "folded_gather_shape",
-        "folded_gather_shape_empty",
-        "symbolic_deconv",
-        "symbolic_cumsum",
-        "quantized_conv_nhwc",
-        "dynamic_quantize_nan",
-        "dynamic_quantize_batch",
-        "dynamic_quantize_empty",
-        "integer_matmul_batches",
-        "integer_matmul_constant",
-        "sequence_repeat",
-        "sequence_repeat_prefix",
-        "sequence_repeat_infer_dim",
-        "topk_symbolic",
-        "random_like_name",
-        "random_f16_distributions",
-        "dynamic_lstm_symbolic_lengths",
-        "if_constant_rank",
-        "gemm_f16_scalars",
-        "division_f16_subnormal",
-        "instance_norm_f16_accumulation",
-        "kokoro_phase_zero_f16",
-        "kokoro_phase_zero_sine_f16",
-        "symbolic_resize_half_reciprocal",
-    ] {
-        kokoro_ops.add(
-            name,
-            OnnxTestCase {
-                path: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                    .join("test-cases/kokoro-ops")
-                    .join(name),
-                ignore_output_type: false,
-                ignore_output_shapes: false,
-                input: None,
-                exact: !name.starts_with("stft_")
-                    && !name.starts_with("dynamic_lstm")
-                    && !name.starts_with("kokoro_phase_zero")
-                    && !name.starts_with("fast_gelu"),
-                approximation: Some(Approximation::Custom(1e-6, 1e-6, 0.)),
-                transform: name
-                    .starts_with("kokoro_phase_zero")
-                    .then_some("kokoro_stabilize_phase"),
-            },
-        );
-    }
-    suite.add("kokoro_ops", kokoro_ops);
-    for name in ["symbolic_resize_precision_guard", "symbolic_resize_half_precision_guard"] {
-        suite.add(
-            name,
-            ExpectedFailure {
-                case: OnnxTestCase {
-                    path: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                        .join("test-cases/kokoro-ops")
-                        .join(name),
-                    ignore_output_type: false,
-                    ignore_output_shapes: false,
-                    input: None,
-                    exact: false,
-                    approximation: None,
-                    transform: None,
-                },
-                message: "differs from symbolic contract",
-            },
-        );
-    }
+    suite.add("generated", generated::suite());
+    suite.add("regressions", regressions::suite());
     suite
 }
 
@@ -448,6 +352,58 @@ fn setup_test_logger() {
 }
 
 pub fn load_half_dataset(prefix: &str, path: &std::path::Path) -> TVec<Tensor> {
+    let json_path = path.join("data.json");
+    if json_path.exists() {
+        let data: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(json_path).unwrap()).unwrap();
+        return data[prefix]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| {
+                let shape: Vec<usize> = item["shape"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|d| d.as_u64().unwrap() as usize)
+                    .collect();
+                let len: usize = shape.iter().product();
+                let tile = if let Some(values) = item["values"].as_array() {
+                    values.clone()
+                } else {
+                    item["runs"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .flat_map(|run| {
+                            std::iter::repeat_n(run[0].clone(), run[1].as_u64().unwrap() as usize)
+                        })
+                        .collect()
+                };
+                let values: Vec<f64> = tile
+                    .iter()
+                    .map(|v| {
+                        if let Some(b) = v.as_bool() {
+                            f64::from(b)
+                        } else if let Some(n) = v.as_f64() {
+                            n
+                        } else {
+                            v.as_str().unwrap().parse().unwrap()
+                        }
+                    })
+                    .collect();
+                assert!(len == 0 || !values.is_empty() && len.is_multiple_of(values.len()));
+                let values: Vec<_> = values.iter().copied().cycle().take(len).collect();
+                let dt: DatumType = tract_onnx::pb::tensor_proto::DataType::try_from(
+                    item["dtype"].as_i64().unwrap() as i32,
+                )
+                .unwrap()
+                .try_into()
+                .unwrap();
+                Tensor::from_shape(&shape, &values).unwrap().cast_to_dt(dt).unwrap().into_owned()
+            })
+            .collect();
+    }
     let mut vec = tvec!();
     let len = std::fs::read_dir(path)
         .map_err(|e| format!("accessing {path:?}, {e:?}"))
