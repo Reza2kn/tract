@@ -3,11 +3,14 @@ use infra::TestSuite;
 use std::path::PathBuf;
 use tract_hir::internal::Approximation;
 
+mod nnef_contracts;
 mod quantized_ops;
 
 /// Focused import and serialization corner cases with independent reference outputs.
 pub fn suite() -> TestSuite {
-    TestSuite::default().with("quantized_ops", quantized_ops::suite())
+    TestSuite::default()
+        .with("quantized_ops", quantized_ops::suite())
+        .with("nnef_contracts", nnef_contracts::suite())
 }
 
 fn cases(group: &str, names: &[&str], guards: &[&str]) -> TestSuite {
