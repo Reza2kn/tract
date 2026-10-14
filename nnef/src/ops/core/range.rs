@@ -17,6 +17,7 @@ fn range_parameters() -> Vec<Parameter> {
         TypeName::Integer.named("start"),
         TypeName::Integer.named("end"),
         TypeName::Integer.named("step"),
+        TypeName::Integer.named("length").default(-1),
     ]
 }
 
@@ -25,7 +26,11 @@ fn range_dump(ast: &mut IntoAst, node: &TypedNode, _: &Range) -> TractResult<Opt
     let end = ast.mapping[&node.inputs[1]].clone();
     let step = ast.mapping[&node.inputs[2]].clone();
 
-    Ok(Some(invocation("tract_core_range", &[start, end, step], &[])))
+    Ok(Some(invocation(
+        "tract_core_range",
+        &[start, end, step],
+        &[("length", tdim(&node.outputs[0].fact.shape[0]))],
+    )))
 }
 
 fn range_load(builder: &mut ModelBuilder, invocation: &ResolvedInvocation) -> TractResult<Value> {
@@ -33,6 +38,9 @@ fn range_load(builder: &mut ModelBuilder, invocation: &ResolvedInvocation) -> Tr
     let end: OutletId = invocation.named_arg_as(builder, "end")?;
     let step: OutletId = invocation.named_arg_as(builder, "step")?;
 
-    let len = builder.model.symbols.new_with_prefix("range");
-    builder.wire(Range::new(len.into()), &[start, end, step])
+    let mut len: TDim = invocation.named_arg_as(builder, "length")?;
+    if len == (-1).to_dim() {
+        len = builder.model.symbols.new_with_prefix("range").into();
+    }
+    builder.wire(Range::new(len), &[start, end, step])
 }

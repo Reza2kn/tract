@@ -153,6 +153,10 @@ impl StridedSlice {
                 return Ok(Dim { begin: 0.to_dim(), end: 0.to_dim(), stride, shrink: false });
             }
         }
+        if stride > 0 {
+            begin = begin.maxi(0.to_dim()).mini(dim.clone());
+            end = end.maxi(0.to_dim()).mini(dim.clone()).maxi(begin.clone());
+        }
         Ok(Dim { begin, end, stride, shrink: false })
     }
 

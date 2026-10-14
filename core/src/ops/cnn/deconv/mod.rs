@@ -31,10 +31,11 @@ pub fn output_shape<D: DimLike>(
     Ok(output_shape.shape)
 }
 
-pub fn adjustments(
+/// Computes fixed output adjustments when input and output spatial dimensions cancel symbolically.
+pub fn adjustments<D: DimLike>(
     pool_spec: &PoolSpec,
-    input_geo: &[usize],
-    output_geo: &[usize],
+    input_geo: &[D],
+    output_geo: &[D],
 ) -> TractResult<TVec<usize>> {
     debug_assert_eq!(pool_spec.rank(), pool_spec.strides().len());
     debug_assert_eq!(pool_spec.rank(), pool_spec.dilations().len());
@@ -58,8 +59,8 @@ pub fn adjustments(
         pad,
     )
     .map(|(x, k, y, s, d, p)| {
-        let adj = y.to_usize()? + p - s * (x.to_usize()? - 1) - (k.to_usize()? - 1) * d - 1;
-        Ok(adj)
+        let adj = y.to_dim() + p - (x.to_dim() - 1) * s - (k - 1) * d - 1;
+        usize::try_from(adj.to_i64()?).context("Deconvolution adjustment must be nonnegative")
     })
     .collect::<TractResult<TVec<usize>>>()
 }

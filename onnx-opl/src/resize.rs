@@ -1,4 +1,5 @@
 use tract_nnef::internal::*;
+use tract_nnef::ser::tdims;
 use tract_nnef::tract_core::ops::nn::resize::{
     self, AxisPlan, CoordTransformer, Interpolator, cubic_weights, is_pixel_replication,
     linear_weights, lower_nearest_integer_upsample, plan_axis, probe_length, resample_axis,
@@ -489,6 +490,95 @@ impl TypedOp for Resize {
     }
 }
 
+/// Infers integer-reciprocal scaling, including reciprocals rounded to float16.
+/// The typed operator checks
+/// the resulting contract against floating-point output-size calculation at runtime.
+pub fn symbolic_reciprocal_shape(
+    op: &Resize,
+    input: &[TDim],
+    scales: &Tensor,
+) -> TractResult<TVec<TDim>> {
+    let axes = op.resized_axes(input.len())?;
+    let scales = scales.cast_to::<f32>()?;
+    let scales = scales.try_as_plain_ram()?.as_slice::<f32>()?;
+    ensure!(scales.len() == axes.len(), "Resize scales length must match axes");
+    let mut shape: TVec<_> = input.into();
+    for (&axis, &scale) in axes.iter().zip(scales) {
+        ensure!(scale.is_finite() && scale > 0., "Resize scales must be finite and positive");
+        shape[axis] = if let Some(dim) = input[axis].as_usize() {
+            ((dim as f32 * scale) as usize).to_dim()
+        } else if scale.fract() == 0. {
+            input[axis].clone() * scale as usize
+        } else {
+            let reciprocal = scale.recip();
+            let divisor = reciprocal.round();
+            let rounded_half = scale == f16::from_f32(divisor.recip()).to_f32();
+            ensure!(
+                reciprocal.is_finite()
+                    && divisor >= 1.
+                    && (reciprocal.fract() == 0. || rounded_half),
+                "Unsupported symbolic Resize scale {scale}"
+            );
+            input[axis].clone() / divisor as usize
+        };
+    }
+    Ok(shape)
+}
+
+/// Resize with integer-reciprocal scales and a symbolic output shape. Floating-point
+/// rounding that disagrees with the inferred dimensions is rejected before consumers run.
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub struct SymbolicScaleResize {
+    pub resize: Resize,
+    pub shape: ShapeFact,
+}
+
+impl Op for SymbolicScaleResize {
+    fn name(&self) -> StaticName {
+        "SymbolicScaleResize".into()
+    }
+    op_as_typed_op!();
+}
+
+impl EvalOp for SymbolicScaleResize {
+    op_out_of_plan!();
+    fn eval(&self, ctx: &EvalContext, inputs: TVec<TValue>) -> TractResult<TVec<TValue>> {
+        let expected = self.shape.eval_to_usize(ctx.symbols)?;
+        let output = self.resize.eval(ctx, inputs)?;
+        ensure!(
+            output[0].shape() == expected.as_slice(),
+            "Resize floating-point output shape {:?} differs from symbolic contract {expected:?}",
+            output[0].shape()
+        );
+        Ok(output)
+    }
+}
+
+impl TypedOp for SymbolicScaleResize {
+    fn output_facts(&self, inputs: &[&TypedFact]) -> TractResult<TVec<TypedFact>> {
+        Ok(tvec!(inputs[0].datum_type.fact(self.shape.clone())))
+    }
+    as_op!();
+
+    fn set_symbols(
+        &self,
+        _source: &TypedModel,
+        node: &TypedNode,
+        target: &mut TypedModel,
+        mapping: &HashMap<OutletId, OutletId>,
+        subs: &HashMap<Symbol, TDim>,
+    ) -> TractResult<TVec<OutletId>> {
+        let shape =
+            self.shape.iter().map(|d| d.substitute_all(subs)).collect::<TractResult<TVec<_>>>()?;
+        let inputs = node.inputs.iter().map(|i| mapping[i]).collect::<TVec<_>>();
+        target.wire_node(
+            &node.name,
+            Self { resize: self.resize.clone(), shape: shape.into() },
+            &inputs,
+        )
+    }
+}
+
 // --- NNEF serialization (edge-case op) ---
 
 pub fn register(registry: &mut Registry) {
@@ -499,6 +589,15 @@ pub fn register(registry: &mut Registry) {
         load,
     );
     registry.register_dumper(dump);
+    let mut guarded_parameters = parameters();
+    guarded_parameters.push(TypeName::Integer.array().named("output_shape"));
+    registry.register_primitive(
+        "tract_onnx_symbolic_resize",
+        &guarded_parameters,
+        &[("output", TypeName::Scalar.tensor())],
+        load_symbolic,
+    );
+    registry.register_dumper(dump_symbolic);
 }
 
 fn parameters() -> Vec<Parameter> {
@@ -517,6 +616,23 @@ fn parameters() -> Vec<Parameter> {
 }
 
 fn dump(ast: &mut IntoAst, node: &TypedNode, op: &Resize) -> TractResult<Option<Arc<RValue>>> {
+    dump_resize(ast, node, op, None)
+}
+
+fn dump_symbolic(
+    ast: &mut IntoAst,
+    node: &TypedNode,
+    op: &SymbolicScaleResize,
+) -> TractResult<Option<Arc<RValue>>> {
+    dump_resize(ast, node, &op.resize, Some(&op.shape))
+}
+
+fn dump_resize(
+    ast: &mut IntoAst,
+    node: &TypedNode,
+    op: &Resize,
+    output_shape: Option<&ShapeFact>,
+) -> TractResult<Option<Arc<RValue>>> {
     let input = ast.mapping[&node.inputs[0]].clone();
     let input_shape = ast.model.outlet_fact(node.inputs[0])?.shape.to_tvec();
     let axes = op.resized_axes(input_shape.len())?;
@@ -557,7 +673,13 @@ fn dump(ast: &mut IntoAst, node: &TypedNode, op: &Resize) -> TractResult<Option<
         let roi = ast.konst_variable(format!("{}.roi", node.name), &roi)?;
         args.push(("roi", (*roi).clone()));
     }
-    Ok(Some(invocation("tract_onnx_resize", &[input, scales], &args)))
+    let primitive = if let Some(shape) = output_shape {
+        args.push(("output_shape", tdims(shape)));
+        "tract_onnx_symbolic_resize"
+    } else {
+        "tract_onnx_resize"
+    };
+    Ok(Some(invocation(primitive, &[input, scales], &args)))
 }
 
 /// Spreads a per-`axes` ROI over the full rank, the layout the NNEF op expects.
@@ -574,6 +696,22 @@ fn full_rank_roi(axes: &[usize], rank: usize, roi: &Tensor) -> TractResult<Arc<T
 }
 
 fn load(builder: &mut ModelBuilder, invocation: &ResolvedInvocation) -> TractResult<Value> {
+    load_resize(builder, invocation, None)
+}
+
+fn load_symbolic(
+    builder: &mut ModelBuilder,
+    invocation: &ResolvedInvocation,
+) -> TractResult<Value> {
+    let shape: TVec<TDim> = invocation.named_arg_as(builder, "output_shape")?;
+    load_resize(builder, invocation, Some(shape.into()))
+}
+
+fn load_resize(
+    builder: &mut ModelBuilder,
+    invocation: &ResolvedInvocation,
+    shape: Option<ShapeFact>,
+) -> TractResult<Value> {
     let input = invocation.named_arg_as(builder, "input")?;
     let scales = invocation.named_arg_as(builder, "scales")?;
     let roi = invocation.optional_named_arg_as::<OutletId>(builder, "roi")?;
@@ -602,5 +740,9 @@ fn load(builder: &mut ModelBuilder, invocation: &ResolvedInvocation) -> TractRes
 
     let mut wires = tvec!(input, scales);
     wires.extend(roi);
-    builder.wire(op, &wires)
+    if let Some(shape) = shape {
+        builder.wire(SymbolicScaleResize { resize: op, shape }, &wires)
+    } else {
+        builder.wire(op, &wires)
+    }
 }
