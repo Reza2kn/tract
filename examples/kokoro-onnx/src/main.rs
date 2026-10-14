@@ -1,0 +1,106 @@
+use anyhow::Context;
+use anyhow::Result;
+use anyhow::ensure;
+use ndarray::Array1;
+use ndarray::Array2;
+use ndarray::ArrayViewD;
+use ndarray_npy::NpzReader;
+use ndarray_npy::NpzWriter;
+use std::fs::File;
+use std::time::Instant;
+use tract::prelude::*;
+
+fn main() -> Result<()> {
+    let mut stabilize_phase = false;
+    let mut runtime_name = "cpu".to_owned();
+    let mut nnef_path = None;
+    let mut args = vec![std::env::args().next().unwrap()];
+    let mut options = std::env::args().skip(1);
+    while let Some(arg) = options.next() {
+        match arg.as_str() {
+            "--stabilize-phase" => stabilize_phase = true,
+            "--runtime" => runtime_name = options.next().context("Missing runtime name")?,
+            "--nnef-roundtrip" => nnef_path = Some(options.next().context("Missing NNEF path")?),
+            _ => args.push(arg),
+        }
+    }
+    ensure!(
+        args.len() >= 4 && args.len().is_multiple_of(2),
+        "Usage: {} [--stabilize-phase] [--runtime cpu|metal] [--nnef-roundtrip MODEL.tar] MODEL.onnx INPUTS.npz OUTPUT.npz [INPUTS.npz OUTPUT.npz ...]",
+        args[0]
+    );
+    let options = OnnxOptions::new()
+        .ignore_value_info(true)
+        .assertion("kokoro_tokens >= 2")
+        .assertion("kokoro_tokens <= 512");
+    let mut model = tract::onnx()?.load_with_options(&args[1], options)?;
+    model.set_input_fact(0, "1,kokoro_tokens,i64")?;
+    for ix in 0..model.output_count()? {
+        model.set_output_fact(ix, InferenceFact::empty()?)?;
+    }
+    let mut model = model.into_model()?;
+    if stabilize_phase {
+        model.transform("kokoro_stabilize_phase")?;
+        println!(
+            "Phase stabilization enabled: zero-bin phase is zero; FP16 sine phase uses float32"
+        );
+    }
+    if let Some(path) = nnef_path {
+        let mut nnef = tract::nnef()?;
+        nnef.enable_onnx()?;
+        nnef.write_model_to_tar(&path, &model)?;
+        model = nnef.load(&path)?;
+        println!("Reloaded NNEF model from {path}");
+    }
+    let runtime = tract::runtime_for_name(&runtime_name)?;
+    println!("Runtime: {}", runtime.name()?);
+    let model = runtime.prepare(model)?;
+    for paths in args[2..].chunks_exact(2) {
+        let mut inputs = NpzReader::new(File::open(&paths[0])?)?;
+        let tokens: Array2<i64> = inputs.by_name("tokens")?;
+        let style: Array2<f32> = inputs.by_name("style")?;
+        let speed: Array1<f32> = inputs.by_name("speed")?;
+        ensure!(
+            tokens.shape()[0] == 1 && (2..=512).contains(&tokens.shape()[1]),
+            "Expected 1 x (2..512) tokens, including boundary tokens"
+        );
+        ensure!(
+            tokens[[0, 0]] == 0
+                && tokens[[0, tokens.shape()[1] - 1]] == 0
+                && tokens.iter().skip(1).take(tokens.len() - 2).all(|token| *token > 0),
+            "Expected zero boundary tokens and positive phoneme IDs"
+        );
+        ensure!(
+            style.shape() == [1, 256] && style.iter().all(|v| v.is_finite()),
+            "Expected a finite 1 x 256 voice style"
+        );
+        ensure!(
+            speed.len() == 1 && speed[0].is_finite() && speed[0] > 0.,
+            "Speed must be finite and positive"
+        );
+        let tokens = Tensor::from_slice(
+            tokens.shape(),
+            tokens.as_slice().context("Non-contiguous tokens")?,
+        )?;
+        let style =
+            Tensor::from_slice(style.shape(), style.as_slice().context("Non-contiguous style")?)?;
+        let speed =
+            Tensor::from_slice(speed.shape(), speed.as_slice().context("Non-contiguous speed")?)?;
+        let start = Instant::now();
+        let output = model.run([tokens, style, speed])?;
+        let elapsed = start.elapsed();
+        let (shape, audio) = output[0].as_shape_and_slice::<f32>()?;
+        ensure!(!audio.is_empty(), "Model produced empty audio");
+        ensure!(audio.iter().all(|v| v.is_finite()), "Model produced non-finite audio");
+        let mut bundle = NpzWriter::new_compressed(File::create(&paths[1])?);
+        bundle.add_array("audio", &ArrayViewD::from_shape(shape, audio)?)?;
+        bundle.finish()?;
+        println!(
+            "{} samples at 24000 Hz ({:.2} seconds), inference {:.3} seconds",
+            audio.len(),
+            audio.len() as f64 / 24000.,
+            elapsed.as_secs_f64()
+        );
+    }
+    Ok(())
+}

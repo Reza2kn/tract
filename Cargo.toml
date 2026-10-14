@@ -44,6 +44,7 @@ members = [
     "examples/nnef-dump-mobilenet-v2",
     "examples/nnef-mobilenet-v2",
     "examples/onnx-mobilenet-v2",
+    "examples/kokoro-onnx",
     "examples/pytorch-albert-v2",
     "examples/pytorch-resnet",
     "examples/causal_llm",

@@ -5,6 +5,7 @@ use tract_hir::internal::Approximation;
 
 mod dynamic_lstm;
 mod float_numerics;
+mod kokoro_phase;
 mod nnef_contracts;
 mod quantized_ops;
 mod sequence_control;
@@ -19,6 +20,7 @@ pub fn suite() -> TestSuite {
         .with("float_numerics", float_numerics::suite())
         .with("nnef_contracts", nnef_contracts::suite())
         .with("sequence_control", sequence_control::suite())
+        .with("kokoro_phase", kokoro_phase::suite())
 }
 
 fn cases(group: &str, names: &[&str], guards: &[&str]) -> TestSuite {

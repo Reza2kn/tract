@@ -11,6 +11,7 @@ extern crate num_integer;
 pub extern crate tract_hir;
 
 pub mod dim_expr;
+mod kokoro;
 pub mod model;
 pub mod ops;
 
