@@ -21,6 +21,7 @@ mod random;
 pub mod rec;
 mod resize;
 mod s2d;
+mod sequence;
 
 pub fn register_all_ops(reg: &mut OnnxOpRegister) {
     reg.insert("Constant", konst);
@@ -30,6 +31,7 @@ pub fn register_all_ops(reg: &mut OnnxOpRegister) {
     });
     reg.insert("GridSample", grid_sample::grid_sample);
     reg.insert("Resize", resize::resize);
+    reg.insert("ConcatFromSequence", sequence::concat_from_sequence);
     reg.insert("NonMaxSuppression", non_max_suppression::non_max_suppression);
     reg.insert("Multinomial", multinomial::multinomial);
     array::register_all_ops(reg);
