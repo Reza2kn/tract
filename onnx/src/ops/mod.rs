@@ -4,6 +4,7 @@ use tract_hir::internal::*;
 
 mod array;
 mod cast;
+mod contrib;
 pub mod cumsum;
 mod d2s;
 mod einsum;
@@ -34,6 +35,7 @@ pub fn register_all_ops(reg: &mut OnnxOpRegister) {
     array::register_all_ops(reg);
     cast::register_all_ops(reg);
     cumsum::register_all_ops(reg);
+    contrib::register_all_ops(reg);
     d2s::register_all_ops(reg);
     fft::register_all_ops(reg);
     logic::register_all_ops(reg);

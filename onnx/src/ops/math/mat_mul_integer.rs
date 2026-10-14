@@ -12,7 +12,7 @@ pub fn mat_mul_integer(
 }
 
 #[derive(Debug, Clone, new, Hash, PartialEq, Eq)]
-struct MatMulInteger {
+pub(crate) struct MatMulInteger {
     pub optional_a_zero_point_input: Option<usize>,
     pub optional_b_zero_point_input: Option<usize>,
 }

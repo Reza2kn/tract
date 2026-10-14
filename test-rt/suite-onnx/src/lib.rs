@@ -1,4 +1,5 @@
 mod generated;
+mod regressions;
 
 use log::*;
 use prost::Message;
@@ -315,6 +316,7 @@ fn full() -> TestSuite {
         suite.add(tests_set.replace('-', "_"), tags);
     }
     suite.add("generated", generated::suite());
+    suite.add("regressions", regressions::suite());
     suite
 }
 
@@ -324,6 +326,58 @@ fn setup_test_logger() {
 }
 
 pub fn load_half_dataset(prefix: &str, path: &std::path::Path) -> TVec<Tensor> {
+    let json_path = path.join("data.json");
+    if json_path.exists() {
+        let data: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(json_path).unwrap()).unwrap();
+        return data[prefix]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| {
+                let shape: Vec<usize> = item["shape"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|d| d.as_u64().unwrap() as usize)
+                    .collect();
+                let len: usize = shape.iter().product();
+                let tile = if let Some(values) = item["values"].as_array() {
+                    values.clone()
+                } else {
+                    item["runs"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .flat_map(|run| {
+                            std::iter::repeat_n(run[0].clone(), run[1].as_u64().unwrap() as usize)
+                        })
+                        .collect()
+                };
+                let values: Vec<f64> = tile
+                    .iter()
+                    .map(|v| {
+                        if let Some(b) = v.as_bool() {
+                            f64::from(b)
+                        } else if let Some(n) = v.as_f64() {
+                            n
+                        } else {
+                            v.as_str().unwrap().parse().unwrap()
+                        }
+                    })
+                    .collect();
+                assert!(len == 0 || !values.is_empty() && len.is_multiple_of(values.len()));
+                let values: Vec<_> = values.iter().copied().cycle().take(len).collect();
+                let dt: DatumType = tract_onnx::pb::tensor_proto::DataType::try_from(
+                    item["dtype"].as_i64().unwrap() as i32,
+                )
+                .unwrap()
+                .try_into()
+                .unwrap();
+                Tensor::from_shape(&shape, &values).unwrap().cast_to_dt(dt).unwrap().into_owned()
+            })
+            .collect();
+    }
     let mut vec = tvec!();
     let len = std::fs::read_dir(path)
         .map_err(|e| format!("accessing {path:?}, {e:?}"))
