@@ -9,6 +9,7 @@ mod float_numerics;
 mod fused_matmul;
 mod integer_matmul;
 mod quantized;
+mod stft;
 
 pub fn suite() -> TestSuite {
     TestSuite::default()
@@ -19,6 +20,7 @@ pub fn suite() -> TestSuite {
         .with("float_numerics", float_numerics::suite())
         .with("quantized", quantized::suite())
         .with("dynamic_lstm", dynamic_lstm::suite())
+        .with("stft", stft::suite())
 }
 
 fn proto(name: &str, tensor: &Tensor) -> TensorProto {

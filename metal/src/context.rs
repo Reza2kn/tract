@@ -103,6 +103,10 @@ impl MetalContext {
             }
         }
         let mut cache_libraries = self.cache_libraries.write().map_err(|e| anyhow!("{:?}", e))?;
+        let options = CompileOptions::new();
+        if name == LibraryName::Quantize {
+            options.set_fast_math_enabled(false);
+        }
         let library = match name.content() {
             LibraryContent::Data(lib_data) => self
                 .device
@@ -113,7 +117,7 @@ impl MetalContext {
                 })?,
             LibraryContent::Source(lib_source) => self
                 .device
-                .new_library_with_source(lib_source, &CompileOptions::new())
+                .new_library_with_source(lib_source, &options)
                 .map_err(|e| anyhow!("{}", e))
                 .with_context(|| {
                     format!("Error while loading Metal library from source: {:?}", name)
@@ -206,19 +210,18 @@ impl DeviceContext for MetalContext {
             (view.tensor.as_bytes(), None)
         };
 
-        // Handle empty data
-        static ZERO: [u8; 1] = [0];
-        let data = if data_bytes.is_empty() { &ZERO } else { data_bytes };
-
-        let size = core::mem::size_of_val(data) as NSUInteger;
-        let device_buffer = MetalBuffer {
-            inner: self.device.new_buffer_with_bytes_no_copy(
-                data.as_ptr() as *const core::ffi::c_void,
-                size,
+        // Empty tensors own no bytes; their GPU placeholder must not alias read-only static memory.
+        let inner = if data_bytes.is_empty() {
+            self.device.new_buffer(1, MTLResourceOptions::StorageModeShared)
+        } else {
+            self.device.new_buffer_with_bytes_no_copy(
+                data_bytes.as_ptr() as *const core::ffi::c_void,
+                data_bytes.len() as NSUInteger,
                 MTLResourceOptions::StorageModeShared,
                 None,
-            ),
+            )
         };
+        let device_buffer = MetalBuffer { inner };
 
         Ok(Box::new(MetalTensor {
             inner: MValue::Natural(tensor.into_arc_tensor()),

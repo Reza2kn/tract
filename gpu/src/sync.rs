@@ -67,7 +67,7 @@ impl EvalOp for DeviceSync {
                 if let Some(device) =
                     input.storage_as::<LazyHostStorage>().and_then(|lazy| lazy.device())
                 {
-                    return Ok(tvec![device.clone().into_tensor().into()]);
+                    return Ok(tvec![device.reshaped(input.shape().into())?.into_tensor().into()]);
                 }
                 let device_input = if let Some(t) = input.as_arc_tensor() {
                     Arc::clone(t).into_device()?
