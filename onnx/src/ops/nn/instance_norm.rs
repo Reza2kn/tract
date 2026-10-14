@@ -1,5 +1,6 @@
 use crate::model::ParsingContext;
 use crate::pb::NodeProto;
+use tract_core::ops::cast::wire_cast;
 use tract_hir::internal::*;
 
 pub fn instance_normalization(
@@ -10,6 +11,7 @@ pub fn instance_normalization(
     Ok((expand(InstanceNorm::new(epsilon)), vec![]))
 }
 
+/// Normalize each batch/channel plane, accumulating float16 statistics in float32.
 #[derive(Debug, Clone, new, Default)]
 pub struct InstanceNorm {
     epsilon: f32,
@@ -44,6 +46,9 @@ impl Expansion for InstanceNorm {
         inputs: &[OutletId],
     ) -> TractResult<TVec<OutletId>> {
         let input_fact = model.outlet_fact(inputs[0])?.clone();
+        let output_dt = input_fact.datum_type;
+        let dt = if output_dt == DatumType::F16 { DatumType::F32 } else { output_dt };
+        let inputs = wire_cast(name, model, inputs, dt)?;
         let rank = input_fact.rank();
         // Each (batch, channel) plane is normalized on its own, over the spatial axes.
         let axes: Vec<_> = (2..rank as i64).collect();
@@ -66,7 +71,7 @@ impl Expansion for InstanceNorm {
         let epsilon = model.add_const(
             format!("{name}.epsilon.cst"),
             tensor0(self.epsilon)
-                .cast_to_dt(input_fact.datum_type)?
+                .cast_to_dt(dt)?
                 .into_owned()
                 .broadcast_into_rank(rank)?
                 .into_arc_tensor(),
@@ -99,6 +104,16 @@ impl Expansion for InstanceNorm {
         for i in 2..rank {
             bias = model.wire_node(format!("{name}.add-bias-axis-{i}"), AxisOp::Add(2), &bias)?;
         }
-        model.wire_node(name, tract_hir::ops::math::add(), &[scaled[0], bias[0]])
+        let normalized =
+            model.wire_node(name, tract_hir::ops::math::add(), &[scaled[0], bias[0]])?;
+        if output_dt == DatumType::F16 {
+            model.wire_node(
+                format!("{name}.cast_output"),
+                tract_core::ops::cast::cast(output_dt),
+                &normalized,
+            )
+        } else {
+            Ok(normalized)
+        }
     }
 }

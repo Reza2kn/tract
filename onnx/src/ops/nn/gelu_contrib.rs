@@ -1,5 +1,7 @@
 use crate::model::ParsingContext;
 use crate::pb::NodeProto;
+use tract_core::ops::binary::TypedBinOp;
+use tract_core::ops::logic;
 use tract_core::ops::math::{add, erf, mul, tanh};
 use tract_hir::internal::*;
 use tract_hir::ops::logic::wire_with_rank_broadcast;
@@ -53,7 +55,55 @@ fn tanh_gelu(
         wire_with_rank_broadcast(format!("{prefix}.one_plus"), model, add(), &[th, one])?[0];
     let half = scalar(model, format!("{prefix}.half"), 0.5, dt)?;
     let half_x = wire_with_rank_broadcast(format!("{prefix}.half_x"), model, mul(), &[x, half])?[0];
-    Ok(wire_with_rank_broadcast(format!("{prefix}.out"), model, mul(), &[half_x, one_plus])?[0])
+    let mut result =
+        wire_with_rank_broadcast(format!("{prefix}.out"), model, mul(), &[half_x, one_plus])?[0];
+    if matches!(dt, DatumType::F32 | DatumType::F16) {
+        // Beyond ±6, the tanh term rounds to ±1; retaining the tanh kernel's
+        // clamped tail error would change the dynamic quantizer's range.
+        let high = scalar(model, format!("{prefix}.high_tail"), 6.0, dt)?;
+        let low = scalar(model, format!("{prefix}.low_tail"), -6.0, dt)?;
+        let zero = scalar(model, format!("{prefix}.tail_zero"), -0.0, dt)?;
+        let negative_infinity =
+            scalar(model, format!("{prefix}.negative_infinity"), f32::NEG_INFINITY, dt)?;
+        let nan = scalar(model, format!("{prefix}.nan"), f32::NAN, dt)?;
+        let infinite = wire_with_rank_broadcast(
+            format!("{prefix}.infinite"),
+            model,
+            TypedBinOp(logic::comp_eq(), None),
+            &[x, negative_infinity],
+        )?[0];
+        let negative_result = wire_with_rank_broadcast(
+            format!("{prefix}.negative_result"),
+            model,
+            logic::Iff,
+            &[infinite, nan, zero],
+        )?[0];
+        let positive = wire_with_rank_broadcast(
+            format!("{prefix}.positive_tail"),
+            model,
+            TypedBinOp(logic::comp_gte(), None),
+            &[x, high],
+        )?[0];
+        let negative = wire_with_rank_broadcast(
+            format!("{prefix}.negative_tail"),
+            model,
+            TypedBinOp(logic::comp_lte(), None),
+            &[x, low],
+        )?[0];
+        result = wire_with_rank_broadcast(
+            format!("{prefix}.positive_result"),
+            model,
+            logic::Iff,
+            &[positive, x, result],
+        )?[0];
+        result = wire_with_rank_broadcast(
+            format!("{prefix}.result"),
+            model,
+            logic::Iff,
+            &[negative, negative_result, result],
+        )?[0];
+    }
+    Ok(result)
 }
 
 macro_rules! simple_rules {

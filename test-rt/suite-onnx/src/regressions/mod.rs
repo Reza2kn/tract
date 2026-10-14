@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use tract_hir::internal::Approximation;
 
 mod dynamic_lstm;
+mod float_numerics;
 mod nnef_contracts;
 mod quantized_ops;
 mod symbolic_shapes;
@@ -14,6 +15,7 @@ pub fn suite() -> TestSuite {
         .with("quantized_ops", quantized_ops::suite())
         .with("dynamic_lstm", dynamic_lstm::suite())
         .with("symbolic_shapes", symbolic_shapes::suite())
+        .with("float_numerics", float_numerics::suite())
         .with("nnef_contracts", nnef_contracts::suite())
 }
 

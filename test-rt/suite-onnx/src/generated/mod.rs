@@ -5,6 +5,7 @@ use tract_onnx::pb::*;
 mod convolution;
 mod dynamic_lstm;
 mod dynamic_quantize;
+mod float_numerics;
 mod fused_matmul;
 mod integer_matmul;
 mod quantized;
@@ -15,6 +16,7 @@ pub fn suite() -> TestSuite {
         .with("dynamic_quantize", dynamic_quantize::suite())
         .with("integer_matmul", integer_matmul::suite())
         .with("fused_matmul", fused_matmul::suite())
+        .with("float_numerics", float_numerics::suite())
         .with("quantized", quantized::suite())
         .with("dynamic_lstm", dynamic_lstm::suite())
 }
