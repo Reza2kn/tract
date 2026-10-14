@@ -1,0 +1,10 @@
+{
+  "input": [
+    {"dtype": 1, "shape": [3], "values": [-3.0, 2.0, "nan"]}
+  ],
+  "output": [
+    {"dtype": 2, "shape": [3], "values": [0, 255, 0]},
+    {"dtype": 1, "shape": [], "values": [0.019607843831181526]},
+    {"dtype": 2, "shape": [], "values": [153]}
+  ]
+}
