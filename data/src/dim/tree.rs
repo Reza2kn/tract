@@ -994,6 +994,12 @@ impl TDim {
                     if redundant.contains(a) || redundant.contains(b) {
                         continue;
                     }
+                    if let Max(inner) = a
+                        && inner.iter().any(|t| eq_structural(t, b))
+                    {
+                        redundant.insert(a.clone());
+                        continue;
+                    }
                     let diff = a.clone() - b;
                     if diff.as_i64().is_some_and(|i| i >= 0)
                         || scope.prove_positive_or_zero_with_extra(&diff, extra)
@@ -1024,6 +1030,12 @@ impl TDim {
                 for pair in flatten.iter().permutations(2) {
                     let (a, b) = (pair[0], pair[1]);
                     if redundant.contains(a) || redundant.contains(b) {
+                        continue;
+                    }
+                    if let Min(inner) = a
+                        && inner.iter().any(|t| eq_structural(t, b))
+                    {
+                        redundant.insert(a.clone());
                         continue;
                     }
                     let diff = a.clone() - b;

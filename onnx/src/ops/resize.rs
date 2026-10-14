@@ -3,6 +3,8 @@ use crate::pb::*;
 use tract_hir::internal::*;
 use tract_nnef::tract_core::ops::nn::resize::{CoordTransformer, Interpolator};
 use tract_nnef::tract_num_traits::Zero as _;
+use tract_onnx_opl::resize::SymbolicScaleResize;
+use tract_onnx_opl::resize::symbolic_reciprocal_shape;
 use tract_onnx_opl::resize::{AspectRatio, CoordTransform, Nearest, Resize};
 
 pub fn resize(
@@ -147,6 +149,18 @@ impl Expansion for ResizeInference {
         model: &mut TypedModel,
         inputs: &[OutletId],
     ) -> TractResult<TVec<OutletId>> {
+        let facts =
+            inputs.iter().map(|i| model.outlet_fact(*i)).collect::<TractResult<Vec<_>>>()?;
+        if let Some(scales) = self.0.optional_scales_input.and_then(|i| facts[i].konst.as_deref())
+            && self.0.compute_output_shape(&facts[0].shape, Some(scales), None).is_err()
+        {
+            let shape = symbolic_reciprocal_shape(&self.0, &facts[0].shape, scales)?;
+            return model.wire_node(
+                name,
+                SymbolicScaleResize { resize: self.0.clone(), shape: shape.into() },
+                inputs,
+            );
+        }
         model.wire_node(name, self.0.clone(), inputs)
     }
 }
@@ -165,7 +179,9 @@ fn rules_with_scales<'r, 'p: 'r, 's: 'r>(
         s.equals(&scales.shape[0], op.resized_axes(rank as usize)?.len().to_dim())
     })?;
     s.given_2(&inputs[0].shape, &inputs[scales_input].value, move |s, input_shape, scales| {
-        let output_size = op.compute_output_shape(&input_shape, Some(scales.as_ref()), None)?;
+        let output_size = op
+            .compute_output_shape(&input_shape, Some(scales.as_ref()), None)
+            .or_else(|_| symbolic_reciprocal_shape(op, &input_shape, &scales))?;
         let rank = input_shape.len();
         for i in 0..rank {
             s.equals(&outputs[0].shape[i], output_size[i].to_dim())?;

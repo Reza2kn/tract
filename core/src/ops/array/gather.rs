@@ -218,11 +218,22 @@ impl TypedOp for Gather {
                     .fact(&*self.compute_output_shape(&data_shape, &inputs[1].shape)?)
             ))
         } else {
-            Ok(tvec!(
-                inputs[0]
-                    .datum_type
-                    .fact(&*self.compute_output_shape(&inputs[0].shape, &inputs[1].shape)?)
-            ))
+            let mut fact = inputs[0]
+                .datum_type
+                .fact(&*self.compute_output_shape(&inputs[0].shape, &inputs[1].shape)?);
+            if inputs[0].datum_type == TDim::datum_type()
+                && inputs[0].rank() == 1
+                && fact.shape.volume() == 1.to_dim()
+                && let (Some(data), Some(indices)) =
+                    (&inputs[0].konst, inputs[1].konst.as_ref().or(inputs[1].uniform.as_ref()))
+            {
+                let index = indices.cast_to_scalar::<i64>()?;
+                let index = if index < 0 { index + data.len() as i64 } else { index };
+                ensure!(index >= 0 && (index as usize) < data.len(), "Gather index out of bounds");
+                fact.uniform_tdim =
+                    Some(data.try_as_plain_ram()?.as_slice::<TDim>()?[index as usize].clone());
+            }
+            Ok(tvec!(fact))
         }
     }
 

@@ -72,7 +72,11 @@ impl Expansion for Range {
             (Some(limit), Some(start), Some(step)) if step.as_i64().is_some_and(|s| s > 0) => {
                 (limit - start).divceil(step.as_i64().unwrap() as usize)
             }
-            _ => model.symbols.new_with_prefix("range").into(),
+            _ => {
+                let len = model.symbols.new_with_prefix("range");
+                model.symbols.add_assertion(format!("{len} >= 0"))?;
+                len.into()
+            }
         };
         // Core Range yields i64 for TDim inputs (both the konst and the
         // dynamic branch of its output_facts), matching the i64 output our

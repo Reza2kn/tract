@@ -3,6 +3,7 @@ use std::collections::HashSet;
 use std::fmt::Debug;
 use tract_itertools::Itertools;
 
+mod bind_static_gather_axes;
 pub mod change_axes;
 mod concat_then_einsum;
 mod op_optim;
@@ -104,6 +105,7 @@ impl Optimizer {
     pub fn declutter() -> Optimizer {
         Optimizer::passes(vec![
             Box::<PropConst>::default(),
+            Box::<bind_static_gather_axes::BindStaticGatherAxes>::default(),
             Box::<PropagateUniformTdim>::default(),
             Box::<PropagateRoi>::default(),
             Box::<FoldUniformMask>::default(),

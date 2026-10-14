@@ -52,6 +52,32 @@ struct OnnxTestCase {
     transform: Option<&'static str>,
 }
 
+#[derive(Clone)]
+struct ExpectedFailure {
+    case: OnnxTestCase,
+    message: &'static str,
+}
+
+impl Test for ExpectedFailure {
+    fn run_with_approx(
+        &self,
+        id: &'static str,
+        runtime: &dyn Runtime,
+        approx: Approximation,
+    ) -> TractResult<()> {
+        match self.case.run_with_approx(id, runtime, approx) {
+            Err(error) => {
+                ensure!(
+                    format!("{error:#}").contains(self.message),
+                    "Unexpected failure: {error:#}"
+                );
+                Ok(())
+            }
+            Ok(()) => bail!("Expected failure containing {:?}", self.message),
+        }
+    }
+}
+
 impl Test for OnnxTestCase {
     fn run_with_approx(
         &self,

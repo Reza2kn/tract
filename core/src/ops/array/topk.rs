@@ -27,12 +27,33 @@ impl Op for Topk {
 impl EvalOp for Topk {
     op_out_of_plan!();
 
-    fn eval(&self, _ctx: &EvalContext, inputs: TVec<TValue>) -> TractResult<TVec<TValue>> {
+    fn eval(&self, ctx: &EvalContext, inputs: TVec<TValue>) -> TractResult<TVec<TValue>> {
         let (input, k) = args_2!(inputs);
         let mut output_shape: TVec<usize> = input.shape().into();
-        let k = k.cast_to_scalar::<i64>()? as usize;
+        let k = k
+            .cast_to::<TDim>()?
+            .try_as_plain_ram()?
+            .to_scalar::<TDim>()?
+            .eval_to_i64(ctx.symbols)?;
+        ensure!(k >= 0 && k as usize <= input.shape()[self.axis], "TopK count exceeds its axis");
+        let k = k as usize;
         output_shape[self.axis] = k;
         let dt = input.datum_type();
+        if dt == TDim::datum_type() {
+            if input.shape()[self.axis] == 1 && k == 1 {
+                return Ok(tvec!(input, Tensor::zero::<i64>(&output_shape)?.into_tvalue()));
+            }
+            let values = input
+                .try_as_plain_ram()?
+                .as_slice::<TDim>()?
+                .iter()
+                .map(|d| d.eval_to_i64(ctx.symbols))
+                .collect::<TractResult<Vec<_>>>()?;
+            let concrete = Tensor::from_shape(input.shape(), &values)?.into_tvalue();
+            let mut result = self.eval(ctx, tvec!(concrete, tensor0(k as i64).into_tvalue()))?;
+            result[0] = result[0].cast_to::<TDim>()?.into_owned().into_tvalue();
+            return Ok(result);
+        }
         let mut output_values = Tensor::zero_dt(dt, &output_shape)?;
         let mut output_indices = Tensor::zero::<i64>(&output_shape)?;
         let mut iterating_shape = output_shape.clone();
@@ -96,9 +117,14 @@ impl TypedOp for Topk {
         let mut fact_indices = inputs[0].without_value();
         let k: TDim = if let Some(k) = &inputs[1].konst {
             k.cast_to::<TDim>()?.try_as_plain_ram()?.to_scalar::<TDim>()?.clone()
+        } else if let Some(k) = &inputs[1].uniform_tdim {
+            k.clone()
         } else {
             self.fallback_k.clone()
         };
+        if inputs[0].shape[self.axis] == 1.to_dim() && k == 1.to_dim() {
+            fact_values.uniform_tdim = inputs[0].uniform_tdim.clone();
+        }
         fact_values.shape.set(self.axis, k.clone());
         fact_indices.shape.set(self.axis, k);
         fact_indices.datum_type = i64::datum_type();

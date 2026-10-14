@@ -466,7 +466,13 @@ impl TypedOp for Reduce {
         } else {
             inputs[0].datum_type
         };
-        Ok(tvec!(dt.fact(shape)))
+        let mut fact = dt.fact(shape);
+        if matches!(self.reducer, Reducer::Min | Reducer::Max)
+            && self.axes.iter().all(|axis| inputs[0].shape[*axis] == 1.to_dim())
+        {
+            fact.uniform_tdim = inputs[0].uniform_tdim.clone();
+        }
+        Ok(tvec!(fact))
     }
 
     fn declutter(
