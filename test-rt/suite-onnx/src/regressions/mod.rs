@@ -7,6 +7,7 @@ mod dynamic_lstm;
 mod float_numerics;
 mod nnef_contracts;
 mod quantized_ops;
+mod sequence_control;
 mod symbolic_shapes;
 
 /// Focused import and serialization corner cases with independent reference outputs.
@@ -17,6 +18,7 @@ pub fn suite() -> TestSuite {
         .with("symbolic_shapes", symbolic_shapes::suite())
         .with("float_numerics", float_numerics::suite())
         .with("nnef_contracts", nnef_contracts::suite())
+        .with("sequence_control", sequence_control::suite())
 }
 
 fn cases(group: &str, names: &[&str], guards: &[&str]) -> TestSuite {
