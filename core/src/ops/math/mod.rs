@@ -474,7 +474,7 @@ fn declutter_div(
                 },
             )?));
         }
-        if dt.is_float() {
+        if dt.is_float() && dt != DatumType::F16 {
             return Ok(Some(TypedModelPatch::rewire(
                 model,
                 &node.inputs,

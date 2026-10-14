@@ -122,31 +122,23 @@ impl OpState for RandomState {
         _inputs: TVec<TValue>,
     ) -> TractResult<TVec<TValue>> {
         let op = op.downcast_ref::<Random>().context("op and state mismatch")?;
-        let mut tensor = unsafe {
-            Tensor::uninitialized_dt(
-                op.fact.datum_type,
-                &op.fact.shape.eval_to_usize(ctx.symbols)?,
-            )?
-        };
+        let dt =
+            if op.fact.datum_type == DatumType::F16 { DatumType::F32 } else { op.fact.datum_type };
+        let mut tensor = Tensor::zero_dt(dt, &op.fact.shape.eval_to_usize(ctx.symbols)?)?;
         match &op.dist {
-            Dist::Uniform { low, high } => match op.fact.datum_type {
+            Dist::Uniform { low, high } => match dt {
                 DatumType::F32 => sample_uniform::<f32>(&mut tensor, &mut self.0, low, high)?,
                 DatumType::F64 => sample_uniform::<f64>(&mut tensor, &mut self.0, low, high)?,
-                DatumType::F16 => {
-                    sample_uniform::<f32>(&mut tensor, &mut self.0, low, high)?;
-                    tensor = tensor.cast_to::<f16>()?.into_owned();
-                }
                 _ => bail!("Random only support float types"),
             },
-            Dist::Normal { mean, dev } => match op.fact.datum_type {
+            Dist::Normal { mean, dev } => match dt {
                 DatumType::F32 => sample_normal::<f32>(&mut tensor, &mut self.0, mean, dev)?,
                 DatumType::F64 => sample_normal::<f64>(&mut tensor, &mut self.0, mean, dev)?,
-                DatumType::F16 => {
-                    sample_uniform::<f32>(&mut tensor, &mut self.0, mean, dev)?;
-                    tensor = tensor.cast_to::<f16>()?.into_owned();
-                }
                 _ => bail!("Random only support float types"),
             },
+        }
+        if op.fact.datum_type == DatumType::F16 {
+            tensor = tensor.cast_to::<f16>()?.into_owned();
         }
         Ok(tvec!(tensor.into_tvalue()))
     }

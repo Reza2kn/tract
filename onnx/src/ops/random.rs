@@ -30,7 +30,7 @@ pub fn random(
         }
     };
 
-    if node.name.ends_with("Like") {
+    if node.op_type.ends_with("Like") {
         Ok((expand(RandomLike { dt, dist, seed }), vec![]))
     } else {
         let shape = node.get_attr_slice::<i64>("shape")?.iter().map(|i| i.to_dim()).collect();
