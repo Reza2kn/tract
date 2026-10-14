@@ -1,6 +1,7 @@
 use tract_core::ops::submodel::SubmodelOp;
 
 use crate::internal::*;
+use crate::ser::array;
 
 pub fn register(registry: &mut Registry) {
     registry.register_dumper(ser_submodel);
@@ -36,8 +37,12 @@ fn ser_submodel(
     node: &TypedNode,
     op: &SubmodelOp,
 ) -> TractResult<Option<Arc<RValue>>> {
-    let input = tvec![ast.mapping[&node.inputs[0]].clone()];
-    let invoke = invocation("tract_core_submodel", &input, &[("label", string(op.label()))]);
+    let inputs = node.inputs.iter().map(|i| (*ast.mapping[i]).clone()).collect::<Vec<_>>();
+    let invoke = invocation(
+        "tract_core_submodel",
+        &[array(&inputs).into()],
+        &[("label", string(op.label()))],
+    );
     ast.resources.insert(op.label().to_string(), Arc::new(TypedModelResource(op.model().clone())));
     Ok(Some(invoke))
 }

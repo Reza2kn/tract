@@ -5,6 +5,10 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT HUP INT TERM
 models=${KOKORO_MODEL_DIR:-$work}
 runtime=${KOKORO_RUNTIME:-cpu}
+example_features=
+if [ "$runtime" = metal ]; then
+    example_features=metal
+fi
 python3 -m venv "$work/venv"
 "$work/venv/bin/python" -m pip install --quiet numpy
 for file in voices-v1.0.bin kokoro-v1.0.fp16.onnx kokoro-v1.0.int8.onnx kokoro-v1.0.onnx; do
@@ -38,8 +42,11 @@ for variant in fp16 int8 float; do
         float) file=kokoro-v1.0.onnx ;;
         *) file=kokoro-v1.0.$variant.onnx ;;
     esac
-    cargo run -p example-kokoro-onnx --profile opt-no-lto -- \
+    cargo run -p example-kokoro-onnx --profile opt-no-lto --features "$example_features" -- \
         --runtime "$runtime" --stabilize-phase --nnef-roundtrip "$work/model.tar" \
         "$models/$file" "$work/short.npz" "$work/short-$variant.npz" \
         "$work/slow.npz" "$work/slow-$variant.npz"
 done
+
+./ci-v1.1-zh.sh
+./ci-current-v1.0.sh

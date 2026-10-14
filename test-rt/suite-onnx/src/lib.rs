@@ -384,6 +384,20 @@ fn full() -> TestSuite {
         "dynamic_quantize_empty",
         "integer_matmul_batches",
         "integer_matmul_constant",
+        "sequence_repeat",
+        "sequence_repeat_prefix",
+        "sequence_repeat_infer_dim",
+        "topk_symbolic",
+        "random_like_name",
+        "random_f16_distributions",
+        "dynamic_lstm_symbolic_lengths",
+        "if_constant_rank",
+        "gemm_f16_scalars",
+        "division_f16_subnormal",
+        "instance_norm_f16_accumulation",
+        "kokoro_phase_zero_f16",
+        "kokoro_phase_zero_sine_f16",
+        "symbolic_resize_half_reciprocal",
     ] {
         kokoro_ops.add(
             name,
@@ -396,30 +410,35 @@ fn full() -> TestSuite {
                 input: None,
                 exact: !name.starts_with("stft_")
                     && !name.starts_with("dynamic_lstm")
-                    && name != "kokoro_phase_zero"
+                    && !name.starts_with("kokoro_phase_zero")
                     && !name.starts_with("fast_gelu"),
                 approximation: Some(Approximation::Custom(1e-6, 1e-6, 0.)),
-                transform: (name == "kokoro_phase_zero").then_some("kokoro_stabilize_phase"),
+                transform: name
+                    .starts_with("kokoro_phase_zero")
+                    .then_some("kokoro_stabilize_phase"),
             },
         );
     }
     suite.add("kokoro_ops", kokoro_ops);
-    suite.add(
-        "symbolic_resize_precision_guard",
-        ExpectedFailure {
-            case: OnnxTestCase {
-                path: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                    .join("test-cases/kokoro-ops/symbolic_resize_precision_guard"),
-                ignore_output_type: false,
-                ignore_output_shapes: false,
-                input: None,
-                exact: false,
-                approximation: None,
-                transform: None,
+    for name in ["symbolic_resize_precision_guard", "symbolic_resize_half_precision_guard"] {
+        suite.add(
+            name,
+            ExpectedFailure {
+                case: OnnxTestCase {
+                    path: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                        .join("test-cases/kokoro-ops")
+                        .join(name),
+                    ignore_output_type: false,
+                    ignore_output_shapes: false,
+                    input: None,
+                    exact: false,
+                    approximation: None,
+                    transform: None,
+                },
+                message: "differs from symbolic contract",
             },
-            message: "differs from symbolic contract",
-        },
-    );
+        );
+    }
     suite
 }
 

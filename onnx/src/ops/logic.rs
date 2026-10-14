@@ -177,9 +177,29 @@ impl InferenceOp for If {
         target: &mut TypedModel,
         mapping: &HashMap<OutletId, OutletId>,
     ) -> TractResult<TVec<OutletId>> {
-        let then_body = self.then_body.clone().into_typed()?;
-        let else_body = self.else_body.clone().into_typed()?;
         let inputs: TVec<_> = node.inputs.iter().map(|o| mapping[o]).collect();
+        let condition_fact = target.outlet_fact(inputs[0])?;
+        let condition = if let Some(condition) = &condition_fact.konst {
+            Some(condition.cast_to_scalar::<bool>()?)
+        } else {
+            condition_fact.uniform_tdim.as_ref().and_then(TDim::as_i64).map(|v| v != 0)
+        };
+        if let Some(condition) = condition {
+            let (body, input_mapping) = if condition {
+                (&self.then_body, &self.then_input_mapping)
+            } else {
+                (&self.else_body, &self.else_input_mapping)
+            };
+            let body = typed_body(body, input_mapping, target, &inputs)?;
+            let inputs = input_mapping.iter().map(|ix| inputs[*ix]).collect::<TVec<_>>();
+            let op = tract_core::ops::submodel::SubmodelOp::new(
+                Box::new(body),
+                &format!("if_{}", node.id),
+            )?;
+            return target.wire_node(&node.name, op, &inputs);
+        }
+        let then_body = typed_body(&self.then_body, &self.then_input_mapping, target, &inputs)?;
+        let else_body = typed_body(&self.else_body, &self.else_input_mapping, target, &inputs)?;
         let op = tract_core::ops::logic::IfThenElse {
             then_body,
             else_body,
@@ -190,4 +210,20 @@ impl InferenceOp for If {
     }
 
     as_op!();
+}
+
+fn typed_body(
+    body: &InferenceModel,
+    input_mapping: &[usize],
+    target: &TypedModel,
+    inputs: &[OutletId],
+) -> TractResult<TypedModel> {
+    let mut body = body.clone();
+    for (ix, outer) in input_mapping.iter().enumerate() {
+        body.set_input_fact(ix, InferenceFact::from(target.outlet_fact(inputs[*outer])?))?;
+    }
+    for ix in 0..body.output_outlets()?.len() {
+        body.set_output_fact(ix, InferenceFact::default())?;
+    }
+    body.into_typed()
 }

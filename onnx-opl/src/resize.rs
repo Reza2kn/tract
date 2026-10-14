@@ -490,7 +490,8 @@ impl TypedOp for Resize {
     }
 }
 
-/// Infers integer-reciprocal scaling of symbolic dimensions. The typed operator checks
+/// Infers integer-reciprocal scaling, including reciprocals rounded to float16.
+/// The typed operator checks
 /// the resulting contract against floating-point output-size calculation at runtime.
 pub fn symbolic_reciprocal_shape(
     op: &Resize,
@@ -510,11 +511,15 @@ pub fn symbolic_reciprocal_shape(
             input[axis].clone() * scale as usize
         } else {
             let reciprocal = scale.recip();
+            let divisor = reciprocal.round();
+            let rounded_half = scale == f16::from_f32(divisor.recip()).to_f32();
             ensure!(
-                reciprocal.is_finite() && reciprocal.fract() == 0. && reciprocal >= 1.,
+                reciprocal.is_finite()
+                    && divisor >= 1.
+                    && (reciprocal.fract() == 0. || rounded_half),
                 "Unsupported symbolic Resize scale {scale}"
             );
-            input[axis].clone() / reciprocal as usize
+            input[axis].clone() / divisor as usize
         };
     }
     Ok(shape)

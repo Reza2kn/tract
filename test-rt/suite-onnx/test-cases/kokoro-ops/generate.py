@@ -395,6 +395,162 @@ def quantized_conv_nhwc():
              helper.make_node("Transpose", ["conv"], ["output"], perm=[0, 2, 1])]
     save("quantized_conv_nhwc", inputs, nodes, constants, output_names=["output"])
 
+def v11_sequence_and_shapes():
+    body_nodes = [
+        helper.make_node('SequenceAt', ['count_parts', 'iteration'], ['count']),
+        helper.make_node('SequenceAt', ['value_parts', 'iteration'], ['value']),
+        helper.make_node('Constant', [], ['one_axis'], value=numpy_helper.from_array(np.array([1], np.int64))),
+        helper.make_node('Unsqueeze', ['value', 'one_axis'], ['value_matrix']),
+        helper.make_node('Constant', [], ['one'], value=numpy_helper.from_array(np.array([1], np.int64))),
+        helper.make_node('Constant', [], ['empty'], value=numpy_helper.from_array(np.array([], np.int64))),
+        helper.make_node('Concat', ['one', 'count', 'empty'], ['target'], axis=0),
+        helper.make_node('Shape', ['target'], ['target_shape']),
+        helper.make_node('ConstantOfShape', ['target_shape'], ['ones'], value=numpy_helper.from_array(np.array([1], np.int64))),
+        helper.make_node('Constant', [], ['minus_one'], value=numpy_helper.from_array(np.array(-1, np.int64))),
+        helper.make_node('Mul', ['ones', 'minus_one'], ['minus_ones']),
+        helper.make_node('Equal', ['target', 'minus_ones'], ['infer_dimension']),
+        helper.make_node('Where', ['infer_dimension', 'ones', 'target'], ['resolved_target']),
+        helper.make_node('Expand', ['value_matrix', 'resolved_target'], ['repeated_matrix']),
+        helper.make_node('Constant', [], ['flatten'], value=numpy_helper.from_array(np.array([-1], np.int64))),
+        helper.make_node('Reshape', ['repeated_matrix', 'flatten'], ['repeated']),
+        helper.make_node('SequenceInsert', ['carried', 'repeated'], ['inserted']),
+        helper.make_node('Cast', ['condition'], ['next_condition'], to=onnx.TensorProto.BOOL),
+    ]
+    for name, dtype, values, counts, trip_count in [
+        ('sequence_repeat', np.int64, [11, 17, 23, 31], [2, 0, 3, 1], 4),
+        ('sequence_repeat_prefix', np.int64, [11, 17, 23, 31], [2, 0, 3, 1], 2),
+        ('sequence_repeat_infer_dim', np.float32, [1.5, 2.25, -3.25, 4.5], [-1, 0, 2, 1], 4),
+    ]:
+        dt=numpy_helper.from_array(np.array(values,dtype)).data_type
+        seq=helper.make_tensor_sequence_value_info('carried',dt,[None])
+        body=helper.make_graph(body_nodes,'repeat_body',[
+            helper.make_tensor_value_info('iteration',onnx.TensorProto.INT64,[]),
+            helper.make_tensor_value_info('body_condition',onnx.TensorProto.BOOL,[]),seq],
+            [helper.make_tensor_value_info('next_condition',onnx.TensorProto.BOOL,[]),
+             helper.make_tensor_sequence_value_info('inserted',dt,[None])])
+        nodes=[helper.make_node('SequenceEmpty',[],['initial'],dtype=dt),
+               helper.make_node('Shape',['counts'],['count_shape']),
+               helper.make_node('ConstantOfShape',['count_shape'],['unit_splits'],value=numpy_helper.from_array(np.array([1],np.int64))),
+               helper.make_node('SplitToSequence',['counts','unit_splits'],['count_parts'],axis=0),
+               helper.make_node('SplitToSequence',['values','unit_splits'],['value_parts'],axis=0),
+               helper.make_node('Loop',['trip_count','condition','initial'],['result_sequence'],body=body),
+               helper.make_node('ConcatFromSequence',['result_sequence'],['output'],axis=0)]
+        save(name,{'values':np.array(values,dtype),'counts':np.array(counts,np.int64),'trip_count':np.array(trip_count,np.int64)},nodes,{'condition':np.array(True)},dynamic=True,output_names=['output'])
+    nodes=[helper.make_node('Range',['start','end','step'],['range']),
+           helper.make_node('Unsqueeze',['range','zero_axis'],['matrix']),
+           helper.make_node('Shape',['matrix'],['shape']),
+           helper.make_node('Gather',['shape','one'],['lengths'],axis=0),
+           helper.make_node('TopK',['lengths','one'],['top','indices']),
+           helper.make_node('Cast',['top'],['output'],to=onnx.TensorProto.INT32)]
+    save('topk_symbolic',{'end':np.array(7,np.int64)},nodes,{'start':np.array(0,np.int64),'step':np.array(1,np.int64),'one':np.array([1],np.int64),'zero_axis':np.array([0],np.int64)},output_names=['range','output','indices'])
+    nodes=[helper.make_node('Range',['start','end','step'],['range']),
+           helper.make_node('RandomNormalLike',['range'],['normal'],name='arbitrary_exported_name',dtype=onnx.TensorProto.FLOAT),
+           helper.make_node('RandomUniformLike',['range'],['uniform'],name='other_exported_name',dtype=onnx.TensorProto.FLOAT),
+           helper.make_node('Shape',['normal'],['normal_shape']),
+           helper.make_node('Shape',['uniform'],['uniform_shape']),
+           helper.make_node('Add',['normal_shape','uniform_shape'],['sum_shape']),
+           helper.make_node('Cast',['sum_shape'],['output'],to=onnx.TensorProto.INT32)]
+    save('random_like_name',{'end':np.array(7,np.int64)},nodes,{'start':np.array(0,np.int64),'step':np.array(1,np.int64)},dynamic=True,output_names=['range','output'])
+
+
+def v11_lstm_and_branch():
+    rng=np.random.default_rng(1101634)
+    constants={"start":np.array(0,np.int64),"step":np.array(1,np.int64),"zero_axis":np.array([0],np.int64),"x_axes":np.array([1,2],np.int64),"one_axis":np.array([1],np.int64),"one":np.array([1],np.int64)}
+    nodes=[helper.make_node("Range",["start","end","step"],["positions"]),
+           helper.make_node("Unsqueeze",["positions","zero_axis"],["matrix"]),
+           helper.make_node("Shape",["matrix"],["shape"]),
+           helper.make_node("Gather",["shape","one"],["lengths"],axis=0),
+           helper.make_node("TopK",["lengths","one"],["sorted_lengths","indices"]),
+           helper.make_node("Cast",["sorted_lengths"],["seq_lens"],to=onnx.TensorProto.INT32),
+           helper.make_node("ReduceMax",["sorted_lengths"],["limit"],keepdims=0),
+           helper.make_node("Range",["start","limit","step"],["same_positions"]),
+           helper.make_node("Add",["positions","same_positions"],["summed"]),
+           helper.make_node("Cast",["summed"],["float_positions"],to=onnx.TensorProto.FLOAT),
+           helper.make_node("Unsqueeze",["float_positions","x_axes"],["x"])]
+    constants.update(w=rng.normal(0,0.1,(1,8,1)).astype(np.float32),r=rng.normal(0,0.1,(1,8,2)).astype(np.float32),qw=rng.integers(-5,6,(1,1,8),dtype=np.int8),qr=rng.integers(-5,6,(1,2,8),dtype=np.int8),ws=np.array([0.02],np.float32),rs=np.array([0.02],np.float32),wz=np.array([0],np.int8),rz=np.array([0],np.int8))
+    nodes += [helper.make_node("LSTM",["x","w","r","","seq_lens"],["y","yh","yc"],hidden_size=2),
+              helper.make_node("DynamicQuantizeLSTM",["x","qw","qr","","seq_lens","","","","ws","wz","rs","rz"],["qy","qyh","qyc"],domain="com.microsoft",hidden_size=2)]
+    save("dynamic_lstm_symbolic_lengths",{"end":np.array(5,np.int64)},nodes,constants,dynamic=True,output_names=["y","yh","yc","qy","qyh","qyc"])
+    then=helper.make_graph([helper.make_node("Squeeze",["data","axis"],["then_output"])],"then",[],[helper.make_tensor_value_info("then_output",onnx.TensorProto.FLOAT,[None])])
+    otherwise=helper.make_graph([helper.make_node("Identity",["data"],["else_output"])],"else",[],[helper.make_tensor_value_info("else_output",onnx.TensorProto.FLOAT,[1,None])])
+    save("if_constant_rank",{"data":np.arange(7,dtype=np.float32).reshape(1,7)},[helper.make_node("If",["condition"],["selected"],then_branch=then,else_branch=otherwise),helper.make_node("Mul",["selected","two"],["output"])],{"condition":np.array(True),"axis":np.array([0],np.int64),"two":np.array(2,np.float32)},dynamic=True,output_names=["output"])
+
+
+def v11_half_precision():
+    save("gemm_f16_scalars",{"a":np.array([[1,2,3],[4,5,6]],np.float16)},[helper.make_node("Gemm",["a","b","c"],["output"],alpha=0.5,beta=0.75)],{"b":np.array([[0.5,1],[1.5,2],[2.5,3]],np.float16),"c":np.array([0.25,-0.25],np.float16)},output_names=["output"])
+    source=ROOT/"kokoro_phase_zero"
+    model=onnx.load(source/"model.onnx")
+    for node in model.graph.node:
+        if node.name=="/decoder/decoder/generator/Where_1":node.name="/decoder/generator/Where_1"
+    for info in [*model.graph.input,*model.graph.output]:info.type.tensor_type.elem_type=onnx.TensorProto.FLOAT16
+    for i,tensor in enumerate(model.graph.initializer):
+        replacement=numpy_helper.from_array(numpy_helper.to_array(tensor).astype(np.float16),tensor.name)
+        model.graph.initializer[i].CopyFrom(replacement)
+    case=ROOT/"kokoro_phase_zero_f16";data=case/"test_data_set_0";data.mkdir(parents=True,exist_ok=True);onnx.save(model,case/"model.onnx")
+    for f in (source/"test_data_set_0").glob("*.pb"):
+        tensor=onnx.TensorProto.FromString(f.read_bytes());values=numpy_helper.to_array(tensor).astype(np.float16)
+        (data/f.name).write_bytes(numpy_helper.from_array(values).SerializeToString())
+
+
+def v11_half_resize():
+    constants={"start":np.array(0,np.int64),"step":np.array(1,np.int64),"axes":np.array([0,1],np.int64),"up":np.array([1,1,300],np.float32),"down":np.array([1,1,float(np.float16(1/300))],np.float32)}
+    nodes=[helper.make_node("Range",["start","end","step"],["positions"]),
+           helper.make_node("Cast",["positions"],["floats"],to=onnx.TensorProto.FLOAT),
+           helper.make_node("Unsqueeze",["floats","axes"],["x"]),
+           helper.make_node("Resize",["x","","up"],["upsampled"],mode="nearest",coordinate_transformation_mode="asymmetric",nearest_mode="floor"),
+           helper.make_node("Resize",["upsampled","","down"],["output"],mode="nearest",coordinate_transformation_mode="asymmetric",nearest_mode="floor")]
+    for name,end in [("symbolic_resize_half_reciprocal",3),("symbolic_resize_half_precision_guard",5000)]:
+        save(name,{"end":np.array(end,np.int64)},nodes,constants,dynamic=True,output_names=["output"])
+
+
+def v11_half_random():
+    constants={"minus_one":np.array(-1,np.float32),"one":np.array(1,np.float32),"minus_two":np.array(-2,np.float32),"three":np.array(3,np.float32),"mean_tolerance":np.array(0.1,np.float32),"normal_var_lo":np.array(0.9,np.float32),"normal_var_hi":np.array(1.1,np.float32),"uniform_var_lo":np.array(1.98,np.float32),"uniform_var_hi":np.array(2.18,np.float32),"uniform_target_mean":np.array(0.5,np.float32)}
+    nodes=[helper.make_node("RandomNormalLike",["x"],["normal_half"],name="normal_export",dtype=onnx.TensorProto.FLOAT16,seed=123.0),helper.make_node("RandomUniformLike",["x"],["uniform_half"],name="uniform_export",dtype=onnx.TensorProto.FLOAT16,seed=123.0,low=-2.0,high=3.0)]
+    outputs=[]
+    for tag in ["normal","uniform"]:
+        nodes += [helper.make_node("Cast",[tag+"_half"],[tag],to=onnx.TensorProto.FLOAT),helper.make_node("ReduceMin",[tag],[tag+"_min"],keepdims=0),helper.make_node("ReduceMax",[tag],[tag+"_max"],keepdims=0),helper.make_node("ReduceMean",[tag],[tag+"_mean"],keepdims=0)]
+        if tag=="normal":checks=[("Less",tag+"_min","minus_one"),("Greater",tag+"_max","one")];mean=tag+"_mean"
+        else:
+            checks=[("GreaterOrEqual",tag+"_min","minus_two"),("LessOrEqual",tag+"_max","three")];mean=tag+"_centered"
+            nodes.append(helper.make_node("Sub",[tag+"_mean","uniform_target_mean"],[mean]))
+        nodes.append(helper.make_node("Abs",[mean],[tag+"_absmean"]))
+        checks.append(("Less",tag+"_absmean","mean_tolerance"))
+        nodes += [helper.make_node("Sub",[tag,tag+"_mean"],[tag+"_center"]),helper.make_node("Mul",[tag+"_center",tag+"_center"],[tag+"_squared"]),helper.make_node("ReduceMean",[tag+"_squared"],[tag+"_variance"],keepdims=0)]
+        checks += [("Greater",tag+"_variance",tag+"_var_lo"),("Less",tag+"_variance",tag+"_var_hi")]
+        for i,(op,a,b) in enumerate(checks):
+            output=tag+"_check_"+str(i);nodes.append(helper.make_node(op,[a,b],[output]));outputs.append(output)
+    save("random_f16_distributions",{"x":np.zeros(16384,np.float16)},nodes,constants,output_names=outputs)
+
+
+def v11_half_division():
+    save("division_f16_subnormal",{"a":np.array([2**-23,2**-24,-2**-23,0,1],np.float16),"b":np.array([2**-24,2**-24,2**-24,2**-24,0.25],np.float16)},[helper.make_node("Div",["a","b"],["output"])],{},output_names=["output"])
+
+
+def v11_half_instance_norm():
+    data=np.array([[np.tile([7,9],5000),np.tile([46,54],5000)]],np.float16)
+    save("instance_norm_f16_accumulation",{"x":data},[helper.make_node("InstanceNormalization",["x","scale","bias"],["output"])],{"scale":np.array([1,1],np.float16),"bias":np.array([0,0.25],np.float16)},output_names=["output"])
+
+
+def v11_half_sine_phase():
+    prefix="/decoder/generator/m_source/l_sin_gen"
+    source=ROOT/"kokoro_phase_zero_f16"
+    model=onnx.load(source/"model.onnx")
+    inputs={}
+    for i,info in enumerate(model.graph.input):inputs[info.name]=numpy_helper.to_array(onnx.TensorProto.FromString((source/f"test_data_set_0/input_{i}.pb").read_bytes())).copy()
+    inputs["phase_steps"]=np.full((1,1,100),0.75,np.float32)
+    constants={t.name:numpy_helper.to_array(t).copy() for t in model.graph.initializer}
+    constants.update(phase_axis=np.array(2,np.int64),phase_scale=np.array(1884,np.float16),phase_up=np.array([1,1,300],np.float32),mean_limit=np.array(0.1,np.float32))
+    nodes=list(model.graph.node)+[
+        helper.make_node("CumSum",["phase_steps","phase_axis"],["phase_sum"],name=prefix+"/CumSum"),
+        helper.make_node("Cast",["phase_sum"],["half_phase"],name=prefix+"/CumSum_output_0_cast_to_fp16_node",to=onnx.TensorProto.FLOAT16),
+        helper.make_node("Mul",["half_phase","phase_scale"],["large_phase"],name=prefix+"/Mul_9"),
+        helper.make_node("Resize",["large_phase","","phase_up"],["upsampled_phase"],name=prefix+"/Resize_1",mode="linear",coordinate_transformation_mode="half_pixel"),
+        helper.make_node("Sin",["upsampled_phase"],["sine"],name=prefix+"/Sin"),
+        helper.make_node("IsNaN",["sine"],["nan_mask"]),helper.make_node("Not",["nan_mask"],["finite"]),
+        helper.make_node("Cast",["sine"],["sine_f32"],to=onnx.TensorProto.FLOAT),helper.make_node("Abs",["sine_f32"],["abs_sine"]),helper.make_node("ReduceMean",["abs_sine"],["mean"],keepdims=0),helper.make_node("Greater",["mean","mean_limit"],["signal"])]
+    phase=numpy_helper.to_array(onnx.TensorProto.FromString((source/"test_data_set_0/output_0.pb").read_bytes())).copy()
+    save("kokoro_phase_zero_sine_f16",inputs,nodes,constants,output_names=["phase","finite","signal"],reference=[phase,np.ones((1,1,30000),bool),np.array(True)])
+
 
 if __name__ == "__main__":
     quantized()
@@ -422,3 +578,19 @@ if __name__ == "__main__":
     symbolic_deconv()
     symbolic_cumsum()
     quantized_conv_nhwc()
+
+    v11_sequence_and_shapes()
+
+    v11_lstm_and_branch()
+
+    v11_half_precision()
+
+    v11_half_resize()
+
+    v11_half_random()
+
+    v11_half_division()
+
+    v11_half_instance_norm()
+
+    v11_half_sine_phase()

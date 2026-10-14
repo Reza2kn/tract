@@ -31,14 +31,19 @@ fn main() -> Result<()> {
     );
     let options = OnnxOptions::new()
         .ignore_value_info(true)
-        .assertion("sequence_length >= 2")
-        .assertion("sequence_length <= 512");
+        .assertion("kokoro_tokens >= 2")
+        .assertion("kokoro_tokens <= 512");
     let mut model = tract::onnx()?.load_with_options(&args[1], options)?;
-    model.set_output_fact(0, InferenceFact::empty()?)?;
+    model.set_input_fact(0, "1,kokoro_tokens,i64")?;
+    for ix in 0..model.output_count()? {
+        model.set_output_fact(ix, InferenceFact::empty()?)?;
+    }
     let mut model = model.into_model()?;
     if stabilize_phase {
         model.transform("kokoro_stabilize_phase")?;
-        println!("Phase stabilization enabled: zero complex bins have phase zero");
+        println!(
+            "Phase stabilization enabled: zero-bin phase is zero; FP16 sine phase uses float32"
+        );
     }
     if let Some(path) = nnef_path {
         let mut nnef = tract::nnef()?;

@@ -65,7 +65,7 @@ pub fn dynamic_lstm(
 }
 
 /// Dynamic eight-bit LSTM with sequence-wide input quantization and per-step hidden quantization.
-/// Standard activations and absent (or constant full-length) sequence lengths are supported.
+/// Standard activations and absent or provably full-length sequence lengths are supported.
 #[derive(Debug, Clone)]
 struct DynamicLstm {
     slots: TVec<Option<usize>>,
@@ -172,13 +172,17 @@ impl Expansion for DynamicLstm {
     ) -> TractResult<TVec<OutletId>> {
         if let Some(slot) = self.slots[4] {
             let fact = model.outlet_fact(inputs[slot])?;
-            let lengths =
-                fact.konst.as_ref().context("Non constant sequence lengths are not supported")?;
-            let seq = model.outlet_fact(inputs[0])?.shape[0].to_i64()?;
-            ensure!(
-                lengths.to_plain_array_view::<i32>()?.iter().all(|&n| n as i64 == seq),
-                "Only full-length sequences are supported"
-            );
+            let seq = &model.outlet_fact(inputs[0])?.shape[0];
+            let full = fact.uniform_tdim.as_ref() == Some(seq)
+                || fact.konst.as_ref().is_some_and(|lengths| {
+                    lengths.cast_to::<TDim>().ok().is_some_and(|lengths| {
+                        lengths
+                            .to_plain_array_view::<TDim>()
+                            .ok()
+                            .is_some_and(|lengths| lengths.iter().all(|n| n == seq))
+                    })
+                });
+            ensure!(full, "Only full-length sequences are supported: {fact:?}, expected {seq:?}");
         }
         let x = model.wire_node(
             format!("{name}.quantize_input"),

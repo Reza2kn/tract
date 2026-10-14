@@ -10,6 +10,7 @@ pub mod multinomial;
 pub mod non_max_suppression;
 pub mod non_zero;
 pub mod random;
+pub mod repeat_interleave;
 pub mod resize;
 
 pub trait WithOnnx {
@@ -41,6 +42,7 @@ pub fn onnx_opl_registry() -> Registry {
     non_zero::register(&mut registry);
     multinomial::register(&mut registry);
     random::register(&mut registry);
+    repeat_interleave::register(&mut registry);
     resize::register(&mut registry);
     registry.register_dumper(lrn::dump);
     registry.register_primitive(

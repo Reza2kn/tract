@@ -16,9 +16,10 @@ def main():
     parser.add_argument("--input", type=Path, default=Path("inputs.npz"))
     parser.add_argument("--output", type=Path, help="Convert this output bundle to WAV")
     source = parser.add_mutually_exclusive_group()
-    source.add_argument("--text", help="Text to phonemize with eSpeak NG")
+    source.add_argument("--text", help="Text to phonemize with the selected G2P")
     source.add_argument("--phonemes", help="Phonemes from an external G2P, such as Misaki")
     parser.add_argument("--language", default="en-us", help="eSpeak NG language for --text")
+    parser.add_argument("--g2p", choices=["espeak", "misaki-zh-v1.1"], default="espeak")
     parser.add_argument("--vocab", type=Path, help="The export's config.json (required for custom input)")
     args = parser.parse_args()
 
@@ -45,17 +46,24 @@ def main():
             vocab = json.load(config)["vocab"]
         phonemes = args.phonemes
         if args.text is not None:
-            try:
-                import espeakng_loader
-                import phonemizer
-                from phonemizer.backend.espeak.wrapper import EspeakWrapper
-            except ImportError:
-                parser.error("--text requires: pip install phonemizer espeakng-loader")
-            EspeakWrapper.set_data_path(espeakng_loader.get_data_path())
-            EspeakWrapper.set_library(espeakng_loader.get_library_path())
-            phonemes = phonemizer.phonemize(
-                args.text.strip(), language=args.language, preserve_punctuation=True, with_stress=True
-            )
+            if args.g2p == "misaki-zh-v1.1":
+                try:
+                    from misaki import zh
+                except ImportError:
+                    parser.error("Chinese v1.1 text requires: pip install 'misaki-fork[zh]'")
+                phonemes, _ = zh.ZHG2P(version="1.1")(args.text.strip())
+            else:
+                try:
+                    import espeakng_loader
+                    import phonemizer
+                    from phonemizer.backend.espeak.wrapper import EspeakWrapper
+                except ImportError:
+                    parser.error("--text requires: pip install phonemizer espeakng-loader")
+                EspeakWrapper.set_data_path(espeakng_loader.get_data_path())
+                EspeakWrapper.set_library(espeakng_loader.get_library_path())
+                phonemes = phonemizer.phonemize(
+                    args.text.strip(), language=args.language, preserve_punctuation=True, with_stress=True
+                )
         dropped = sorted(set(phonemes) - set(vocab))
         if dropped:
             print(f"Characters outside the export vocabulary are discarded: {dropped!r}")
