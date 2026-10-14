@@ -313,9 +313,19 @@ impl<'a> IntoAst<'a> {
         }
     }
 
+    /// Names a tensor without shadowing a symbolic dimension in the NNEF scope.
     pub fn scoped_id(&self, name: impl AsRef<str>) -> Identifier {
         let name = name.as_ref().to_string();
-        Identifier(name)
+        if self.model.symbols.get(&name).is_none() {
+            return Identifier(name);
+        }
+        let mut candidate = format!("{name}_tensor");
+        while self.model.symbols.get(&candidate).is_some()
+            || self.model.node_by_name(&candidate).is_ok()
+        {
+            candidate.push('_');
+        }
+        Identifier(candidate)
     }
 
     pub fn force_variable(&mut self, name: impl AsRef<str>, exp: &Arc<RValue>) -> Arc<RValue> {
@@ -383,12 +393,23 @@ impl<'a> IntoAst<'a> {
         let mut name: Identifier = name.as_ref().into();
         let have_tract_core = self.ensure_registry(&"tract_core".into()).is_ok();
         if tensor.datum_type() == TDim::datum_type() {
-            return Ok(Self::dump_rec_tensor(&tensor.to_plain_array_view::<TDim>()?, tdim).into());
+            let value = Self::dump_rec_tensor(&tensor.to_plain_array_view::<TDim>()?, tdim).into();
+            return if have_tract_core {
+                Ok(invocation("tract_core_cast", &[value], &[("to", datum_type(DatumType::TDim))]))
+            } else {
+                Ok(value)
+            };
         }
         if !force_variable
             && !self.framework.extern_all_constants
             && tensor.len() <= 8
             && tensor.len() > 0
+            && (!tensor.datum_type().is_float()
+                || tensor
+                    .cast_to::<f32>()?
+                    .to_plain_array_view::<f32>()?
+                    .iter()
+                    .all(|v| v.is_finite()))
         {
             if tensor.datum_type() == String::datum_type() {
                 return Ok(Self::dump_rec_tensor(&tensor.to_plain_array_view::<String>()?, |f| {

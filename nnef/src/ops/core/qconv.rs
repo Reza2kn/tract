@@ -53,13 +53,25 @@ fn qconv_unary_dump(
     }
     named_args.push(("output_dt", crate::ser::datum_type(node.outputs[0].fact.datum_type)));
 
-    let wire = ast.mapping[&node.inputs[0]].clone();
+    ensure!(op.pool_spec.data_format.has_n());
+    let mut wire = ast.mapping[&node.inputs[0]].clone();
+    if op.pool_spec.data_format.c_is_last() {
+        let mut perm: TVec<usize> = (0..node.outputs[0].fact.rank()).collect();
+        perm[1..].rotate_right(1);
+        wire = invocation("transpose", &[wire], &[("axes", ints(&perm))]);
+    }
     ensure!(op.kernel_fmt == KernelFormat::OIHW);
     let weights = ast.mapping[&node.inputs[1]].clone();
     let bias = ast.mapping[&node.inputs[2]].clone();
     let inputs = tvec![wire, weights, bias];
 
-    Ok(Some(invocation("tract_core_qconv", &inputs, &named_args)))
+    let mut wire = invocation("tract_core_qconv", &inputs, &named_args);
+    if op.pool_spec.data_format.c_is_last() {
+        let mut perm: TVec<usize> = (0..node.outputs[0].fact.rank()).collect();
+        perm[1..].rotate_left(1);
+        wire = invocation("transpose", &[wire], &[("axes", ints(&perm))]);
+    }
+    Ok(Some(wire))
 }
 
 fn qconv_load(builder: &mut ModelBuilder, invocation: &ResolvedInvocation) -> TractResult<Value> {

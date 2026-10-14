@@ -1,11 +1,11 @@
-# Kokoro ONNX on CPU
+# Kokoro ONNX on CPU and Metal
 
 This example runs the FP32, mixed-quantized, and int8 CPU exports from the
 [kokoro-onnx v1.0 model release](https://github.com/thewh1teagle/kokoro-onnx/releases/tag/model-files-v1.0).
 `kokoro-v1.0.fp16.onnx` contains mixed signed/unsigned quantized operators despite its filename.
 `kokoro-v1.0.int8.onnx` also uses dynamically quantized LSTMs.
 The FP16-GPU-named release asset is byte-identical to the FP16-named one;
-this example executes it on CPU.
+use `--runtime metal` to execute supported operations on Metal.
 It takes int64 `tokens` (including zero boundary tokens), a float32 voice `style`
 of shape `[1, 256]`, and a float32 `speed` of shape `[1]`. Audio is mono, 24 kHz.
 
@@ -54,8 +54,28 @@ per-channel weight scales, optional biases and initial states, and standard
 activations. Nontrivial sequence lengths, custom activations, clipping, coupled
 gates, and peepholes are rejected explicitly.
 
-GPU execution and NNEF export are not exercised here. CPU outputs are not
-samplewise identical to ONNX Runtime: FFT residuals can select opposite phase
+On Apple platforms, select the Metal runtime explicitly:
+
+```sh
+cargo run -p example-kokoro-onnx --profile opt-no-lto -- --runtime metal --stabilize-phase kokoro-v1.0.int8.onnx inputs.npz audio.npz
+```
+
+Metal execution uses CPU fallback for unsupported operations, including the dynamic
+quantizers and the decoder's 20-point STFT. It does not imply that every operation
+runs on the GPU or that inference will be faster for a given input.
+
+To serialize and reload a model before running it, add `--nnef-roundtrip`:
+
+```sh
+cargo run -p example-kokoro-onnx --profile opt-no-lto -- --nnef-roundtrip kokoro.tar --stabilize-phase kokoro-v1.0.int8.onnx inputs.npz audio.npz
+```
+
+The archive preserves dynamic dimensions, quantization parameters, and the optional
+phase transform. It uses tract's core and ONNX NNEF extensions; enable the ONNX
+registry when loading it with `tract::nnef()`. Combine this option with
+`--runtime metal` to execute the reloaded graph on Metal.
+
+Outputs are not samplewise identical to ONNX Runtime: FFT residuals can select opposite phase
 branches at near-zero bins, and quantized recurrence can amplify small floating-point
 differences. Token durations can also differ in int8 exports. Compare speech quality
 and timing for your application's inputs; a matching output length alone does not

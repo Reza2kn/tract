@@ -255,6 +255,71 @@ def dynamic_quantize_zero():
          output_names=["y", "scale", "zero"])
 
 
+def gelu_tails():
+    inputs = {"x": np.array([-12., -8., -6., -0.75251085, 0., 0.60003972, 6., 6.993848], np.float32)}
+    nodes = [helper.make_node("FastGelu", ["x"], ["gelu"], domain="com.microsoft"),
+             helper.make_node("DynamicQuantizeLinear", ["gelu"], ["q", "scale", "zero"])]
+    save("fast_gelu_tails", inputs, nodes, {}, output_names=["gelu", "q", "scale", "zero"])
+    save("fast_gelu_nonfinite", {"x": np.array([np.nan, -np.inf, np.inf, -1e30, 1e30], np.float32)},
+         [helper.make_node("FastGelu", ["x"], ["gelu"], domain="com.microsoft")], {}, output_names=["gelu"])
+
+
+def folded_gather_shape():
+    for empty in [False, True]:
+        inputs = {"data": np.array([[3., 5., 7., 11.]], np.float32)}
+        constants = {"mask": np.array([False, not empty, not empty, False]), "axis": np.array([0], np.int64), "axis1": np.array([1], np.int64), "axes": np.array([1, 2], np.int64), "ones": np.array([1, 1], np.int64), "zero": np.array([[[0]]], np.int64)}
+        nodes = [
+            helper.make_node("NonZero", ["mask"], ["nz"]),
+            helper.make_node("Squeeze", ["nz", "axis"], ["indices"]),
+            helper.make_node("Gather", ["data", "indices"], ["values"], axis=1),
+            helper.make_node("Shape", ["indices"], ["count"]),
+            helper.make_node("Concat", ["count", "ones"], ["shape"], axis=0),
+            helper.make_node("Expand", ["zero", "shape"], ["zeros"]),
+            helper.make_node("Unsqueeze", ["indices", "axes"], ["column"]),
+            helper.make_node("Expand", ["column", "shape"], ["expanded"]),
+            helper.make_node("Concat", ["zeros", "expanded"], ["grid"], axis=2),
+        ]
+        save("folded_gather_shape" + ("_empty" if empty else ""), inputs, nodes, constants, dynamic=True, output_names=["values", "grid"])
+
+
+def dynamic_quantize_nan():
+    save("dynamic_quantize_nan", {"x": np.array([-3., 2., np.nan], np.float32)},
+         [helper.make_node("DynamicQuantizeLinear", ["x"], ["y", "scale", "zero"])], {}, output_names=["y", "scale", "zero"])
+
+
+def symbolic_deconv():
+    inputs = {"end": np.array(5, np.int64)}
+    constants = {"start": np.array(0, np.int64), "step": np.array(1, np.int64), "axes": np.array([0, 1], np.int64), "kernel": np.array([[[1., 2., 3.]]], np.float32), "bias": np.array([0.5], np.float32)}
+    nodes = [helper.make_node("Range", ["start", "end", "step"], ["range"]),
+             helper.make_node("Cast", ["range"], ["floats"], to=onnx.TensorProto.FLOAT),
+             helper.make_node("Unsqueeze", ["floats", "axes"], ["data"]),
+             helper.make_node("ConvTranspose", ["data", "kernel", "bias"], ["output"], strides=[2], pads=[1, 1], output_padding=[1])]
+    save("symbolic_deconv", inputs, nodes, constants, dynamic=True, output_names=["output"])
+
+
+def symbolic_cumsum():
+    inputs = {"end": np.array(5, np.int64), "data": np.array([2.], np.float32)}
+    constants = {"start": np.array(0, np.int64), "step": np.array(1, np.int64), "axis": np.array(0, np.int64)}
+    nodes = [helper.make_node("Range", ["start", "end", "step"], ["positions"]),
+             helper.make_node("Shape", ["positions"], ["shape"]),
+             helper.make_node("CumSum", ["shape", "axis"], ["sums"]),
+             helper.make_node("Cast", ["sums"], ["floats"], to=onnx.TensorProto.FLOAT),
+             helper.make_node("Mul", ["data", "floats"], ["scaled"]),
+             helper.make_node("ReduceSum", ["positions"], ["total"], keepdims=0),
+             helper.make_node("Cast", ["total"], ["float_total"], to=onnx.TensorProto.FLOAT),
+             helper.make_node("Add", ["scaled", "float_total"], ["output"])]
+    save("symbolic_cumsum", inputs, nodes, constants, dynamic=True, output_names=["output"])
+
+
+def quantized_conv_nhwc():
+    inputs = {"data": np.arange(14, dtype=np.uint8).reshape(1, 7, 2) + 60}
+    constants = {"kernel": (np.arange(12, dtype=np.int8).reshape(2, 2, 3) - 5), "xs": np.array(0.5, np.float32), "xz": np.array(63, np.uint8), "ws": np.array(0.25, np.float32), "wz": np.array(0, np.int8), "ys": np.array(0.125, np.float32), "yz": np.array(63, np.uint8), "bias": np.array([3, -2], np.int32)}
+    nodes = [helper.make_node("Transpose", ["data"], ["nchw"], perm=[0, 2, 1]),
+             helper.make_node("QLinearConv", ["nchw", "xs", "xz", "kernel", "ws", "wz", "ys", "yz", "bias"], ["conv"], pads=[1, 1]),
+             helper.make_node("Transpose", ["conv"], ["output"], perm=[0, 2, 1])]
+    save("quantized_conv_nhwc", inputs, nodes, constants, output_names=["output"])
+
+
 if __name__ == "__main__":
     quantized()
     matmul()
@@ -271,3 +336,10 @@ if __name__ == "__main__":
     phase_zero()
 
     dynamic_quantize_zero()
+
+    gelu_tails()
+    folded_gather_shape()
+    dynamic_quantize_nan()
+    symbolic_deconv()
+    symbolic_cumsum()
+    quantized_conv_nhwc()

@@ -22,6 +22,7 @@ mod one_hot;
 mod pow_const;
 mod qconv;
 mod qmatmul;
+mod quantize_linear;
 mod range;
 mod reduce;
 mod resize;
@@ -71,6 +72,7 @@ pub fn register(registry: &mut Registry) {
     one_hot::register(registry);
     qconv::register(registry);
     qmatmul::register(registry);
+    quantize_linear::register(registry);
     reduce::register(registry);
     resize::register(registry);
     rms_norm::register(registry);

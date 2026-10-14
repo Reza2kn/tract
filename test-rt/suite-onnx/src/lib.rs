@@ -371,6 +371,14 @@ fn full() -> TestSuite {
         "nonfinite_quantization",
         "kokoro_phase_zero",
         "dynamic_quantize_zero",
+        "fast_gelu_tails",
+        "fast_gelu_nonfinite",
+        "folded_gather_shape",
+        "folded_gather_shape_empty",
+        "symbolic_deconv",
+        "symbolic_cumsum",
+        "quantized_conv_nhwc",
+        "dynamic_quantize_nan",
     ] {
         kokoro_ops.add(
             name,
@@ -383,7 +391,8 @@ fn full() -> TestSuite {
                 input: None,
                 exact: name != "stft_real_rank2"
                     && !name.starts_with("dynamic_lstm")
-                    && name != "kokoro_phase_zero",
+                    && name != "kokoro_phase_zero"
+                    && !name.starts_with("fast_gelu"),
                 approximation: Some(Approximation::Custom(1e-6, 1e-6, 0.)),
                 transform: (name == "kokoro_phase_zero").then_some("kokoro_stabilize_phase"),
             },

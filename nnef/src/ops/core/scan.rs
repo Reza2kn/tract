@@ -161,7 +161,7 @@ fn de_scan(builder: &mut ModelBuilder, invocation: &ResolvedInvocation) -> Tract
             scan.iter().find(|s| s.0 == par.id.0 || escape(&s.0) == par.id.0)
         {
             input_mapping.push(InputMapping::Scan(ScanInfo { axis: *axis, chunk: *chunk }));
-            let mut fact = builder.model.outlet_fact(*wire)?.clone();
+            let mut fact = builder.model.outlet_fact(*wire)?.without_value();
             fact.shape.set(*axis, chunk.abs().to_dim());
             (*wire, fact)
         } else if let Some((_, wire)) =

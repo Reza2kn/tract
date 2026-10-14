@@ -1,0 +1,231 @@
+use tract_nnef::internal::*;
+use tract_nnef::tract_ndarray::ArrayViewD;
+
+/// Registers per-tensor dynamic quantization in the ONNX NNEF extension.
+pub fn register(registry: &mut Registry) {
+    registry.register_primitive(
+        "tract_onnx_dynamic_quantize_linear",
+        &[TypeName::Scalar.tensor().named("input")],
+        &[
+            ("quantized", TypeName::Integer.tensor()),
+            ("scale", TypeName::Scalar.tensor()),
+            ("zero_point", TypeName::Integer.tensor()),
+        ],
+        load,
+    );
+    registry.register_dumper(dump);
+}
+
+fn load(builder: &mut ModelBuilder, invocation: &ResolvedInvocation) -> TractResult<Value> {
+    let input = invocation.named_arg_as(builder, "input")?;
+    builder.wire(DynamicQuantizeLinearU8, &[input])
+}
+
+fn dump(
+    ast: &mut IntoAst,
+    node: &TypedNode,
+    _op: &DynamicQuantizeLinearU8,
+) -> TractResult<Option<Arc<RValue>>> {
+    Ok(Some(invocation(
+        "tract_onnx_dynamic_quantize_linear",
+        &[ast.mapping[&node.inputs[0]].clone()],
+        &[],
+    )))
+}
+
+fn dynamic_quantize_linear_f32_u8(x: f32, scale: f32, zero_point: u8) -> u8 {
+    ((x / scale).round_ties_even() + zero_point as f32).max(u8::MIN as f32).min(u8::MAX as f32)
+        as u8
+}
+
+fn dynamic_quantize_linear_u8(scale: f32, zero_point: u8, xs: &[f32], ys: &mut [u8]) {
+    xs.iter()
+        .zip(ys.iter_mut())
+        .for_each(|(x, y)| *y = dynamic_quantize_linear_f32_u8(*x, scale, zero_point));
+}
+
+fn scale_and_zero_point(v: ArrayViewD<f32>) -> (f32, u8) {
+    // get the min and max of v and extend it to have zero included
+    // in the interval [min, max]
+    let (min, max) = v.fold((0., 0.), |(a_min, a_max), &v| {
+        if v < a_min {
+            (v, a_max)
+        } else if v > a_max {
+            (a_min, v)
+        } else {
+            (a_min, a_max)
+        }
+    });
+
+    // quantize range
+    let min_t = u8::MIN as f32;
+    let max_t = u8::MAX as f32;
+
+    let scale = if min == max { 1. } else { (max - min) / max_t };
+
+    let zero_point = -min / scale;
+    let zero_point = zero_point.round_ties_even();
+    // clipping to [0, 255]
+    let zero_point = zero_point.max(min_t);
+    let zero_point = zero_point.min(max_t);
+
+    let zero_point: u8 = zero_point as u8;
+
+    (scale, zero_point)
+}
+
+/// Dynamic per-tensor uint8 quantization with nearest-even rounding, saturation, and scalar parameters.
+#[derive(Clone, Debug, Default, Hash, PartialEq, Eq)]
+pub struct DynamicQuantizeLinearU8;
+
+impl DynamicQuantizeLinearU8 {
+    /// Creates a per-tensor quantizer whose range includes zero; all-zero inputs use unit scale.
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Op for DynamicQuantizeLinearU8 {
+    fn name(&self) -> StaticName {
+        "DynamicQuantizeLinearU8".into()
+    }
+
+    fn info(&self) -> TractResult<Vec<String>> {
+        Ok(vec![])
+    }
+
+    fn validation(&self) -> Validation {
+        Validation::Accurate
+    }
+
+    op_as_typed_op!();
+}
+
+impl EvalOp for DynamicQuantizeLinearU8 {
+    op_out_of_plan!();
+    fn eval(&self, _ctx: &EvalContext, inputs: TVec<TValue>) -> TractResult<TVec<TValue>> {
+        let input = &inputs[0];
+        let input = input.cast_to::<f32>()?;
+        let a_input = input.to_plain_array_view::<f32>()?;
+        let (scale, zero_point) = scale_and_zero_point(a_input);
+
+        let mut dst = Tensor::zero::<u8>(input.shape())?;
+        // We cannot use quantize_linear_u8 here because it does `x * scale.recip()`
+        // instead of `x / scale`. This change some number enough to be rounded to another integer.
+        dynamic_quantize_linear_u8(
+            scale,
+            zero_point,
+            input.try_as_plain_ram()?.as_slice::<f32>()?,
+            dst.try_as_plain_ram_mut()?.as_slice_mut::<u8>()?,
+        );
+
+        let quantized_tensor = dst.into_tvalue();
+        let scale_tensor = tensor0(scale).into();
+        let zero_point_tensor = tensor0(zero_point).into();
+
+        Ok(tvec!(quantized_tensor, scale_tensor, zero_point_tensor))
+    }
+}
+
+impl TypedOp for DynamicQuantizeLinearU8 {
+    fn output_facts(&self, inputs: &[&TypedFact]) -> TractResult<TVec<TypedFact>> {
+        let mut quantized_fact = inputs[0].clone();
+        quantized_fact.datum_type = u8::datum_type();
+        let scale_fact = f32::fact([0; 0]);
+        let zero_fact = u8::fact([0; 0]);
+        Ok(tvec!(quantized_fact, scale_fact, zero_fact))
+    }
+
+    as_op!();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tract_ndarray::arr1;
+
+    // Data for tests is from:
+    // https://github.com/onnx/onnx/blob/master/docs/Operators.md#DynamicQuantizeLinear
+    #[test]
+    fn test_scale_and_zero_point() {
+        let data: [(&[f32], f32, u8); 3] = [
+            (&[0., 2., -3., -2.5, 1.34, 0.5], 0.019_607_844, 153),
+            (&[-1., -2.1, -1.3, -2.5, -3.34, -4.], 0.015_686_275, 255),
+            (&[1., 2.1, 1.3, 2.5, 3.34, 4., 1.5, 2.6, 3.9, 4., 3., 2.345], 0.015_686_275, 0),
+        ];
+
+        let epsilon = 0.00000001;
+        for (v, scale_ok, zero_point_ok) in &data {
+            let v = arr1(v).into_dyn();
+            let v = v.view();
+            let (scale, zero_point) = scale_and_zero_point(v);
+            assert!((scale - scale_ok).abs() < epsilon);
+            assert_eq!(zero_point, *zero_point_ok);
+        }
+    }
+
+    #[test]
+    fn test_dynamic_quantize_linear_u8() {
+        let data: [(&[f32], &[u8]); 3] = [
+            (&[0., 2., -3., -2.5, 1.34, 0.5], &[153, 255, 0, 26, 221, 179]),
+            (&[-1., -2.1, -1.3, -2.5, -3.34, -4.], &[191, 121, 172, 96, 42, 0]),
+            (
+                &[1., 2.1, 1.3, 2.5, 3.34, 4., 1.5, 2.6, 3.9, 4., 3., 2.345],
+                &[64, 134, 83, 159, 213, 255, 96, 166, 249, 255, 191, 149],
+            ),
+        ];
+
+        for (v, quantized_ok) in &data {
+            let v = arr1(v).into_dyn();
+            let (scale, zero_point) = scale_and_zero_point(v.view());
+
+            // same shape of v but with u8 type, values will be overwritten
+            let mut quantized = v.mapv(|_| 0_u8);
+            dynamic_quantize_linear_u8(
+                scale,
+                zero_point,
+                v.as_slice().unwrap(),
+                quantized.as_slice_mut().unwrap(),
+            );
+            assert_eq!(quantized.as_slice().unwrap(), *quantized_ok);
+        }
+    }
+
+    // https://onnx.ai/onnx/operators/onnx__DynamicQuantizeLinear.html specifies
+    // `y = saturate(round(x / y_scale) + y_zero_point)` with rounding to nearest, ties to even.
+    // `f32::round` rounds ties away from zero, which differs on every tie whose integer part is
+    // even. Both roundings in this file are affected: the value, and the zero point itself.
+    #[test]
+    fn test_dynamic_quantize_linear_u8_rounds_ties_to_even() {
+        // The value on a tie. scale is exactly 1, so 0.5 survives the division as a tie.
+        // round_ties_even(0.5) = 0, so y = 0 + 127; rounding away from zero would give 128.
+        let v = arr1(&[-127f32, 128., 0.5]).into_dyn();
+        let (scale, zero_point) = scale_and_zero_point(v.view());
+        assert_eq!(scale, 1.0);
+        assert_eq!(zero_point, 127);
+        let mut quantized = v.mapv(|_| 0_u8);
+        dynamic_quantize_linear_u8(
+            scale,
+            zero_point,
+            v.as_slice().unwrap(),
+            quantized.as_slice_mut().unwrap(),
+        );
+        assert_eq!(quantized.as_slice().unwrap(), &[0, 255, 127]);
+
+        // The zero point on a tie: -min/scale is exactly 126.5, whose integer part is even.
+        // round_ties_even gives 126; rounding away from zero would give 127 and shift every
+        // output by one.
+        let v = arr1(&[-253f32, 257.]).into_dyn();
+        let (scale, zero_point) = scale_and_zero_point(v.view());
+        assert_eq!(scale, 2.0);
+        assert_eq!(zero_point, 126);
+        let mut quantized = v.mapv(|_| 0_u8);
+        dynamic_quantize_linear_u8(
+            scale,
+            zero_point,
+            v.as_slice().unwrap(),
+            quantized.as_slice_mut().unwrap(),
+        );
+        assert_eq!(quantized.as_slice().unwrap(), &[0, 254]);
+    }
+}

@@ -533,13 +533,10 @@ pub fn conv_like(
 
     let op: Box<dyn TypedOp> =
         if ConvLikeVariant::Deconv == variant || ConvLikeVariant::Debox == variant {
-            let output_shape = invocation.named_arg_as::<TVec<usize>>(builder, "output_shape")?;
+            let output_shape = invocation.named_arg_as::<TVec<TDim>>(builder, "output_shape")?;
             let output_shape = Some(output_shape).filter(|os| os.len() == pool_spec.rank());
             let adjustments = if let Some(output_shape) = output_shape {
-                let input_shape = &input_fact
-                    .shape
-                    .as_concrete()
-                    .context("symbolic dimension not supported in deconv")?[2..];
+                let input_shape = &input_fact.shape.to_tvec()[2..];
                 adjustments(&pool_spec, input_shape, &output_shape)?
             } else {
                 tvec!(0; pool_spec.rank())

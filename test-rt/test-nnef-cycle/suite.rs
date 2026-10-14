@@ -65,11 +65,7 @@ test_gelu_default_1
 test_gelu_default_1_expanded
 test_gelu_default_2
 test_gelu_default_2_expanded
-test_dequantizelinear
 test_dropout_random
-test_dynamicquantizelinear
-test_dynamicquantizelinear_max_adjusted
-test_dynamicquantizelinear_min_adjusted
 test_if
 test_gemm_broadcast
 test_gemm_nobroadcast
@@ -93,7 +89,6 @@ test_mod_uint64
 test_mod_uint8
 test_matmulinteger
 test_nllloss_NCd1d2d3_none_no_weight_negative_ii_expanded
-test_quantizelinear
 test_qlinearmatmul_2D
 test_qlinearmatmul_3D
 test_reshape_reordered_dims

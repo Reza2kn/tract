@@ -11,11 +11,22 @@ use std::time::Instant;
 use tract::prelude::*;
 
 fn main() -> Result<()> {
-    let stabilize_phase = std::env::args().any(|a| a == "--stabilize-phase");
-    let args: Vec<_> = std::env::args().filter(|a| a != "--stabilize-phase").collect();
+    let mut stabilize_phase = false;
+    let mut runtime_name = "cpu".to_owned();
+    let mut nnef_path = None;
+    let mut args = vec![std::env::args().next().unwrap()];
+    let mut options = std::env::args().skip(1);
+    while let Some(arg) = options.next() {
+        match arg.as_str() {
+            "--stabilize-phase" => stabilize_phase = true,
+            "--runtime" => runtime_name = options.next().context("Missing runtime name")?,
+            "--nnef-roundtrip" => nnef_path = Some(options.next().context("Missing NNEF path")?),
+            _ => args.push(arg),
+        }
+    }
     ensure!(
         args.len() >= 4 && args.len().is_multiple_of(2),
-        "Usage: {} [--stabilize-phase] MODEL.onnx INPUTS.npz OUTPUT.npz [INPUTS.npz OUTPUT.npz ...]",
+        "Usage: {} [--stabilize-phase] [--runtime cpu|metal] [--nnef-roundtrip MODEL.tar] MODEL.onnx INPUTS.npz OUTPUT.npz [INPUTS.npz OUTPUT.npz ...]",
         args[0]
     );
     let options = OnnxOptions::new()
@@ -29,7 +40,16 @@ fn main() -> Result<()> {
         model.transform("kokoro_stabilize_phase")?;
         println!("Phase stabilization enabled: zero complex bins have phase zero");
     }
-    let model = model.into_runnable()?;
+    if let Some(path) = nnef_path {
+        let mut nnef = tract::nnef()?;
+        nnef.enable_onnx()?;
+        nnef.write_model_to_tar(&path, &model)?;
+        model = nnef.load(&path)?;
+        println!("Reloaded NNEF model from {path}");
+    }
+    let runtime = tract::runtime_for_name(&runtime_name)?;
+    println!("Runtime: {}", runtime.name()?);
+    let model = runtime.prepare(model)?;
     for paths in args[2..].chunks_exact(2) {
         let mut inputs = NpzReader::new(File::open(&paths[0])?)?;
         let tokens: Array2<i64> = inputs.by_name("tokens")?;
