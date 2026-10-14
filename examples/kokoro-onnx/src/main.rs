@@ -11,10 +11,11 @@ use std::time::Instant;
 use tract::prelude::*;
 
 fn main() -> Result<()> {
-    let args: Vec<_> = std::env::args().collect();
+    let stabilize_phase = std::env::args().any(|a| a == "--stabilize-phase");
+    let args: Vec<_> = std::env::args().filter(|a| a != "--stabilize-phase").collect();
     ensure!(
         args.len() >= 4 && args.len().is_multiple_of(2),
-        "Usage: {} MODEL.onnx INPUTS.npz OUTPUT.npz [INPUTS.npz OUTPUT.npz ...]",
+        "Usage: {} [--stabilize-phase] MODEL.onnx INPUTS.npz OUTPUT.npz [INPUTS.npz OUTPUT.npz ...]",
         args[0]
     );
     let options = OnnxOptions::new()
@@ -23,7 +24,12 @@ fn main() -> Result<()> {
         .assertion("sequence_length <= 512");
     let mut model = tract::onnx()?.load_with_options(&args[1], options)?;
     model.set_output_fact(0, InferenceFact::empty()?)?;
-    let model = model.into_model()?.into_runnable()?;
+    let mut model = model.into_model()?;
+    if stabilize_phase {
+        model.transform("kokoro_stabilize_phase")?;
+        println!("Phase stabilization enabled: zero complex bins have phase zero");
+    }
+    let model = model.into_runnable()?;
     for paths in args[2..].chunks_exact(2) {
         let mut inputs = NpzReader::new(File::open(&paths[0])?)?;
         let tokens: Array2<i64> = inputs.by_name("tokens")?;

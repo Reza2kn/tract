@@ -45,6 +45,8 @@ struct OnnxTestCase {
     ignore_output_type: bool,
     input: Option<String>,
     exact: bool,
+    approximation: Option<Approximation>,
+    transform: Option<&'static str>,
 }
 
 #[derive(Clone)]
@@ -81,8 +83,11 @@ impl Test for OnnxTestCase {
         approx: Approximation,
     ) -> TractResult<()> {
         setup_test_logger();
-        let approx =
-            if self.exact { Approximation::Exact } else { ulp_override().unwrap_or(approx) };
+        let approx = if self.exact {
+            Approximation::Exact
+        } else {
+            ulp_override().or(self.approximation).unwrap_or(approx)
+        };
         let model_file = self.path.join("model.onnx");
         info!("Loading {model_file:?}");
         let mut onnx = tract_onnx::onnx();
@@ -129,7 +134,12 @@ impl Test for OnnxTestCase {
                 trace!("Model:\n{model:#?}");
                 model.analyse(false)?;
                 model = model.incorporate()?;
-                let model = model.into_typed()?.into_decluttered()?;
+                let mut model = model.into_typed()?.into_decluttered()?;
+                if let Some(name) = self.transform {
+                    tract_core::transform::get_transform(name)?
+                        .context("Missing transform")?
+                        .transform(&mut model)?;
+                }
                 info!("Test model (mode: {}) {:#?}", runtime.name(), self.path);
                 let runnable = runtime.prepare(model)?;
                 run_model(&*runnable, inputs, &data_path, approx, self.exact)?;
@@ -318,6 +328,8 @@ fn full() -> TestSuite {
                         ignore_output_shapes,
                         input,
                         exact: false,
+                        approximation: None,
+                        transform: None,
                     },
                     if ignored { TestStatus::Ignored } else { TestStatus::OK },
                 );
@@ -338,6 +350,8 @@ fn full() -> TestSuite {
                 ignore_output_shapes: false,
                 input: None,
                 exact: true,
+                approximation: None,
+                transform: None,
             },
         );
     }
@@ -351,6 +365,12 @@ fn full() -> TestSuite {
         "dynamic_range_resize",
         "quantized_matmul_axes",
         "symbolic_slice_bounds",
+        "dynamic_lstm_int8",
+        "dynamic_lstm_uint8",
+        "dynamic_lstm_zero",
+        "nonfinite_quantization",
+        "kokoro_phase_zero",
+        "dynamic_quantize_zero",
     ] {
         kokoro_ops.add(
             name,
@@ -361,7 +381,11 @@ fn full() -> TestSuite {
                 ignore_output_type: false,
                 ignore_output_shapes: false,
                 input: None,
-                exact: name != "stft_real_rank2",
+                exact: name != "stft_real_rank2"
+                    && !name.starts_with("dynamic_lstm")
+                    && name != "kokoro_phase_zero",
+                approximation: Some(Approximation::Custom(1e-6, 1e-6, 0.)),
+                transform: (name == "kokoro_phase_zero").then_some("kokoro_stabilize_phase"),
             },
         );
     }
@@ -376,6 +400,8 @@ fn full() -> TestSuite {
                 ignore_output_shapes: false,
                 input: None,
                 exact: false,
+                approximation: None,
+                transform: None,
             },
             message: "differs from symbolic contract",
         },

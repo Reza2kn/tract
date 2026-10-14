@@ -11,13 +11,15 @@ use tract_linalg::mmm::RoundingPolicy;
 use super::binary::TypedBinOp;
 use super::math::round_ties_to_even;
 
+/// Quantize with an inverse scale, nearest-even rounding, and saturation; NaN maps to the minimum.
 pub fn quantize_linear_f32_u8(x: f32, scale: f32, zero_point: i32) -> u8 {
-    ((round_ties_to_even(x * scale) as i32) + zero_point).clamp(u8::MIN as i32, u8::MAX as i32)
+    (round_ties_to_even(x * scale) + zero_point as f32).max(u8::MIN as f32).min(u8::MAX as f32)
         as u8
 }
 
+/// Quantize with an inverse scale, nearest-even rounding, and saturation; NaN maps to the minimum.
 pub fn quantize_linear_f32_i8(x: f32, scale: f32, zero_point: i32) -> i8 {
-    ((round_ties_to_even(x * scale) as i32) + zero_point).clamp(i8::MIN as i32, i8::MAX as i32)
+    (round_ties_to_even(x * scale) + zero_point as f32).max(i8::MIN as f32).min(i8::MAX as f32)
         as i8
 }
 

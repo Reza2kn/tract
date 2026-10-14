@@ -307,7 +307,7 @@ fn scale_and_zero_point(v: ArrayViewD<f32>) -> (f32, u8) {
     let min_t = u8::MIN as f32;
     let max_t = u8::MAX as f32;
 
-    let scale = (max - min) / max_t;
+    let scale = if min == max { 1. } else { (max - min) / max_t };
 
     let zero_point = -min / scale;
     let zero_point = zero_point.round_ties_even();

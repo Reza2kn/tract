@@ -178,6 +178,83 @@ def dynamic_range():
     save("dynamic_range_resize", inputs, nodes, c, dynamic=True)
 
 
+def dynamic_lstm():
+    rng = np.random.default_rng(1634)
+    for dtype in [np.int8, np.uint8]:
+        inputs, nodes, constants, outputs = {}, [], {}, []
+        for direction, channels, bias, initial in product(["forward", "reverse", "bidirectional"], [False, True], [False, True], [False, True]):
+            tag = f"lstm_{direction}_{int(channels)}{int(bias)}{int(initial)}"
+            dirs = 2 if direction == "bidirectional" else 1
+            h, k, batch, seq = 3, 5, 2, 4
+            x = rng.normal(size=(seq, batch, k)).astype(np.float32)
+            x[0] *= 0.02
+            inputs[tag + "x"] = x
+            params = {"w": rng.integers(-60, 61, (dirs, k, 4*h)), "r": rng.integers(-60, 61, (dirs, h, 4*h))}
+            qshape = (dirs, 4*h) if channels else (dirs,)
+            for key in ["w", "r"]:
+                zp = 0 if dtype == np.int8 else 110
+                params[key] = (params[key] + zp).astype(dtype)
+                params[key+"s"] = rng.uniform(0.001, 0.008, qshape).astype(np.float32)
+                params[key+"z"] = np.full(qshape, zp, dtype)
+            args = [tag+"x", tag+"w", tag+"r", "", "", "", "", "", tag+"ws", tag+"wz", tag+"rs", tag+"rz"]
+            if bias:
+                params["b"] = rng.normal(0, 0.2, (dirs, 8*h)).astype(np.float32); args[3] = tag+"b"
+            if initial:
+                params["ih"] = rng.normal(0, 0.2, (dirs, batch, h)).astype(np.float32)
+                params["ic"] = rng.normal(0, 0.2, (dirs, batch, h)).astype(np.float32)
+                args[5:7] = [tag+"ih", tag+"ic"]
+            constants.update({tag+key: value for key, value in params.items()})
+            node_outputs = [tag+"y", tag+"yh", tag+"yc"]
+            if initial and not bias:
+                node_outputs[0] = ""
+            nodes.append(helper.make_node("DynamicQuantizeLSTM", args, node_outputs, name=tag, domain="com.microsoft", direction=direction, hidden_size=h))
+            outputs.extend(x for x in node_outputs if x)
+        save("dynamic_lstm_"+np.dtype(dtype).name, inputs, nodes, constants, output_names=outputs)
+    inputs = {"x": np.zeros((2, 1, 3), np.float32)}
+    constants = {"w": np.zeros((1, 3, 8), np.int8), "r": np.zeros((1, 2, 8), np.int8), "ws": np.ones(1, np.float32), "rs": np.ones(1, np.float32), "wz": np.zeros(1, np.int8), "rz": np.zeros(1, np.int8)}
+    save("dynamic_lstm_zero", inputs, [helper.make_node("DynamicQuantizeLSTM", ["x", "w", "r", "", "", "", "", "", "ws", "wz", "rs", "rz"], ["y", "yh", "yc"], domain="com.microsoft", hidden_size=2)], constants, output_names=["y", "yh", "yc"])
+
+
+def nonfinite_quantization():
+    inputs = {"x": np.array([[np.nan, np.inf, -np.inf, 1e30, -1e30, 0., 0.25, 0.75, -0.25, -0.75]], np.float32)}
+    constants = {"scale": np.array(0.5, np.float32), "scales": np.array([0.5] * 10, np.float32)}
+    nodes = []
+    for dtype, zero in [(np.uint8, 63), (np.int8, 1), (np.uint8, 0), (np.int8, -1)]:
+        tag = np.dtype(dtype).name + "_" + str(zero)
+        constants[tag] = np.array(zero, dtype)
+        constants[tag+"s"] = np.full(10, zero, dtype)
+        nodes.append(helper.make_node("QuantizeLinear", ["x", "scale", tag], [tag+"y"]))
+        nodes.append(helper.make_node("QuantizeLinear", ["x", "scales", tag+"s"], [tag+"axis"], axis=1))
+    save("nonfinite_quantization", inputs, nodes, constants)
+
+
+def phase_zero():
+    inputs = {"imag": np.array([0., -0., 0., 1., -1., 1., -1., 0., 0.], np.float32), "real": np.array([0., 0., 1., 1., 1., -1., -1., -1., -0.], np.float32)}
+    constants = {"zero": np.array(0., np.float32), "pi": np.array(np.pi, np.float32)}
+    nodes = [
+        helper.make_node("Div", ["imag", "real"], ["ratio"]),
+        helper.make_node("Atan", ["ratio"], ["angle"]),
+        helper.make_node("Greater", ["imag", "zero"], ["positive_imaginary"]),
+        helper.make_node("Less", ["real", "zero"], ["negative_real"]),
+        helper.make_node("Add", ["angle", "pi"], ["upper"]),
+        helper.make_node("Sub", ["angle", "pi"], ["lower"]),
+        helper.make_node("Where", ["positive_imaginary", "upper", "lower"], ["negative_phase"]),
+        helper.make_node("Where", ["negative_real", "negative_phase", "angle"], ["phase"], name="/decoder/decoder/generator/Where_1"),
+    ]
+    save("kokoro_phase_zero", inputs, nodes, constants, output_names=["phase"])
+    output = ROOT / "kokoro_phase_zero/test_data_set_0/output_0.pb"
+    tensor = onnx.TensorProto.FromString(output.read_bytes())
+    values = numpy_helper.to_array(tensor).copy()
+    values[(inputs["imag"] == 0) & (inputs["real"] == 0)] = 0
+    output.write_bytes(numpy_helper.from_array(values).SerializeToString())
+
+
+def dynamic_quantize_zero():
+    save("dynamic_quantize_zero", {"x": np.zeros((2, 3), np.float32)},
+         [helper.make_node("DynamicQuantizeLinear", ["x"], ["y", "scale", "zero"])], {},
+         output_names=["y", "scale", "zero"])
+
+
 if __name__ == "__main__":
     quantized()
     matmul()
@@ -186,3 +263,11 @@ if __name__ == "__main__":
     quantized_matmul()
     symbolic_slice()
     symbolic_resize_precision_guard()
+
+    dynamic_lstm()
+
+    nonfinite_quantization()
+
+    phase_zero()
+
+    dynamic_quantize_zero()
