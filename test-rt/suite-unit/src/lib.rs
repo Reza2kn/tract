@@ -30,6 +30,7 @@ pub mod q_helpers;
 pub mod rms_norm;
 pub mod scaled_masked_softmax;
 pub mod sdpa;
+pub mod serialization;
 pub mod silu;
 pub mod slice;
 
@@ -53,6 +54,7 @@ pub fn suite() -> TractResult<TestSuite> {
     suite.add("scaled_masked_softmax", scaled_masked_softmax::suite()?);
     suite.add("sdpa", sdpa::suite()?);
     suite.add("silu", silu::suite()?);
+    suite.add("serialization", serialization::suite());
     suite.add("slice", slice::suite()?);
     suite.add("q_binary", q_binary::suite()?);
     suite.add("q_elmwise", q_elmwise::suite()?);
