@@ -362,6 +362,7 @@ fn full() -> TestSuite {
         "quantized_int8",
         "fused_matmul",
         "stft_real_rank2",
+        "stft_frame20",
         "dynamic_range_resize",
         "quantized_matmul_axes",
         "symbolic_slice_bounds",
@@ -379,6 +380,10 @@ fn full() -> TestSuite {
         "symbolic_cumsum",
         "quantized_conv_nhwc",
         "dynamic_quantize_nan",
+        "dynamic_quantize_batch",
+        "dynamic_quantize_empty",
+        "integer_matmul_batches",
+        "integer_matmul_constant",
     ] {
         kokoro_ops.add(
             name,
@@ -389,7 +394,7 @@ fn full() -> TestSuite {
                 ignore_output_type: false,
                 ignore_output_shapes: false,
                 input: None,
-                exact: name != "stft_real_rank2"
+                exact: !name.starts_with("stft_")
                     && !name.starts_with("dynamic_lstm")
                     && name != "kokoro_phase_zero"
                     && !name.starts_with("fast_gelu"),

@@ -6,6 +6,10 @@ This example runs the FP32, mixed-quantized, and int8 CPU exports from the
 `kokoro-v1.0.int8.onnx` also uses dynamically quantized LSTMs.
 The FP16-GPU-named release asset is byte-identical to the FP16-named one;
 use `--runtime metal` to execute supported operations on Metal.
+The FP32, FP16-named, and int8 v0.19 exports from the
+[original model release](https://github.com/thewh1teagle/kokoro-onnx/releases/tag/model-files)
+use the same runner and default smoke-test tokens. Use that release's `voices.bin`
+with those models.
 It takes int64 `tokens` (including zero boundary tokens), a float32 voice `style`
 of shape `[1, 256]`, and a float32 `speed` of shape `[1]`. Audio is mono, 24 kHz.
 
@@ -22,10 +26,22 @@ cargo run -p example-kokoro-onnx --profile opt-no-lto -- kokoro-v1.0.fp16.onnx i
 ```
 
 `prepare.py` supplies the phonemes for “Hello world” with the `af_sarah` voice.
-Use `--voice` and `--speed` to change those inputs. For arbitrary text, use an
-external phonemizer/tokenizer with the export's vocabulary and select the voice
-style row indexed by the phoneme count minus one. The Rust runner accepts any
-compatible input bundle; it does not perform text normalization or phonemization.
+Use `--voice` and `--speed` to change those inputs. To prepare arbitrary text with
+eSpeak NG, supply the export's vocabulary configuration:
+
+```sh
+.venv/bin/python -m pip install phonemizer espeakng-loader
+curl -L https://raw.githubusercontent.com/thewh1teagle/kokoro-onnx/3596b26764286a7de9d90c363e988d50578918e5/src/kokoro_onnx/config.json -o config.json
+.venv/bin/python prepare.py voices-v1.0.bin --vocab config.json --text "This is a complete sentence." --language en-us --voice af_heart
+```
+
+For languages that need a different G2P, supply its output with `--phonemes` and
+`--vocab`; for example, use Misaki for Japanese and Mandarin. The helper reports
+characters it discards outside the export vocabulary and rejects empty inputs or
+more than 510 phoneme tokens. Split longer text before preparing each bundle. Voice
+style is selected at the row indexed by the surviving phoneme count minus one.
+Use the vocabulary and voice archive matching your model version. The Rust runner
+accepts any compatible input bundle; it does not perform text normalization or phonemization.
 Additional input/output pairs on the command line reuse the same compiled model.
 
 The runner uses tract's public Rust API. It discards intermediate shape annotations
@@ -60,8 +76,9 @@ On Apple platforms, select the Metal runtime explicitly:
 cargo run -p example-kokoro-onnx --profile opt-no-lto -- --runtime metal --stabilize-phase kokoro-v1.0.int8.onnx inputs.npz audio.npz
 ```
 
-Metal execution uses CPU fallback for unsupported operations, including the dynamic
-quantizers and the decoder's 20-point STFT. It does not imply that every operation
+Metal executes the dynamic quantizers, integer matrix products, and the decoder's
+20-point STFT on the GPU. It uses CPU fallback for other unsupported operations,
+including quantized convolutions. It does not imply that every operation
 runs on the GPU or that inference will be faster for a given input.
 
 To serialize and reload a model before running it, add `--nnef-roundtrip`:
@@ -80,3 +97,7 @@ branches at near-zero bins, and quantized recurrence can amplify small floating-
 differences. Token durations can also differ in int8 exports. Compare speech quality
 and timing for your application's inputs; a matching output length alone does not
 establish audio equivalence.
+
+`./ci.sh` verifies the v1.0 release asset checksums and runs both voice/speed bundles
+through NNEF for all three exports. `./ci-gpu.sh` does the same on Metal on Apple
+platforms. Set `KOKORO_MODEL_DIR` to reuse an existing download directory.

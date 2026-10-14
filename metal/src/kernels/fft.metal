@@ -88,3 +88,46 @@ DEFINE_FFT(256)
 DEFINE_FFT(512)
 DEFINE_FFT(1024)
 DEFINE_FFT(2048)
+
+constant float2 stft20_roots[20] = {
+    float2(1.000000000f, 0.000000000f),
+    float2(0.951056516f, -0.309016994f),
+    float2(0.809016994f, -0.587785252f),
+    float2(0.587785252f, -0.809016994f),
+    float2(0.309016994f, -0.951056516f),
+    float2(0.000000000f, -1.000000000f),
+    float2(-0.309016994f, -0.951056516f),
+    float2(-0.587785252f, -0.809016994f),
+    float2(-0.809016994f, -0.587785252f),
+    float2(-0.951056516f, -0.309016994f),
+    float2(-1.000000000f, 0.000000000f),
+    float2(-0.951056516f, 0.309016994f),
+    float2(-0.809016994f, 0.587785252f),
+    float2(-0.587785252f, 0.809016994f),
+    float2(-0.309016994f, 0.951056516f),
+    float2(0.000000000f, 1.000000000f),
+    float2(0.309016994f, 0.951056516f),
+    float2(0.587785252f, 0.809016994f),
+    float2(0.809016994f, 0.587785252f),
+    float2(0.951056516f, 0.309016994f)
+};
+
+kernel void stft20_forward(
+    device const float2 *in [[buffer(0)]],
+    device const float *win [[buffer(1)]],
+    device float2 *out [[buffer(2)]],
+    constant int &T [[buffer(3)]],
+    constant int &frames [[buffer(4)]],
+    constant int &stride [[buffer(5)]],
+    uint3 group [[threadgroup_position_in_grid]],
+    uint bin [[thread_index_in_threadgroup]]) {
+    threadgroup float2 signal[20];
+    const uint base = group.y * (uint)T + group.x * (uint)stride;
+    signal[bin] = in[base + bin] * win[bin];
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    float2 sum = float2(0.0f);
+    for (uint sample = 0; sample < 20; ++sample) {
+        sum += fft_cmul(signal[sample], stft20_roots[(bin * sample) % 20]);
+    }
+    out[(group.y * (uint)frames + group.x) * 20 + bin] = sum;
+}

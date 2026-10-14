@@ -7,7 +7,7 @@ use tract_gpu::ops::stft::{GpuFft, GpuStft, is_supported_frame};
 use tract_gpu::tensor::DeviceTensor;
 
 /// Fused STFT on Metal: gather a strided frame, apply the pre-padded window, then a
-/// forward FFT (one FFT per threadgroup, frame a supported power of two). `input` is
+/// forward FFT (one FFT per threadgroup, frame 20 or a supported power of two). `input` is
 /// interleaved-complex f32 `[lead.., T, 2]`, `window` the real `[frame]` window, `output`
 /// `[lead.., frames, frame, 2]`. The frame length is read from the output shape.
 fn dispatch_eval(
@@ -28,7 +28,7 @@ fn dispatch_eval(
     let axis = rank - 2;
     ensure!(output.rank() == rank + 1, "STFT output must be [.., frames, frame, 2]");
     let n = output.shape()[axis + 1];
-    ensure!(is_supported_frame(n), "MetalStft: unsupported frame {n}");
+    ensure!(n == 20 || is_supported_frame(n), "MetalStft: unsupported frame {n}");
     ensure!(window.len() == n, "STFT window len {} != frame {n}", window.len());
     let batch: usize = input.shape()[..axis].iter().product();
     let t = input.shape()[axis];
@@ -47,7 +47,8 @@ fn dispatch_eval(
 
         let grid_size =
             MTLSize { width: frames as NSUInteger, height: batch as NSUInteger, depth: 1 };
-        let group_size = MTLSize { width: (n / 2) as NSUInteger, height: 1, depth: 1 };
+        let threads = if n == 20 { n } else { n / 2 };
+        let group_size = MTLSize { width: threads as NSUInteger, height: 1, depth: 1 };
         encoder.dispatch_thread_groups(grid_size, group_size);
     });
     Ok(())
@@ -69,7 +70,7 @@ fn metal_stft_op(axis: usize, frame: usize, stride: usize, window: Arc<Tensor>) 
 
 crate::register_metal_op!(Stft, |source, node, op| {
     let in_fact = &source.node_input_facts(node.id)?[0];
-    rule_if!(is_supported_frame(op.frame));
+    rule_if!(op.frame == 20 || is_supported_frame(op.frame));
     rule_if!(in_fact.rank() >= 2 && op.axis == in_fact.rank() - 2);
     rule_if!(in_fact.datum_type == DatumType::F32);
     let window = tract_gpu::ops::stft::padded_window(op.window.as_ref(), op.frame)?;

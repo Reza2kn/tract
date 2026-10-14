@@ -1,15 +1,25 @@
 use crate::internal::*;
 use crate::ser::*;
 use std::any::TypeId;
+use tract_core::ops::binary::TypedBinOp;
 use tract_core::ops::element_wise::ElementWiseOp;
 use tract_core::ops::quant::DequantizeLinearF32;
 use tract_core::ops::quant::QuantizeLinearI8;
 use tract_core::ops::quant::QuantizeLinearU8;
+use tract_core::ops::quant::Scale;
 use tract_core::ops::quant::quantize_linear_i8;
 use tract_core::ops::quant::quantize_linear_u8;
+use tract_core::ops::quant::scale;
 
-/// Registers linear eight-bit quantization and float dequantization in core NNEF.
+/// Registers quantization, dequantization, and mixed-type rounded scaling in core NNEF.
 pub fn register(registry: &mut Registry) {
+    registry.register_dumper(dump_scale);
+    registry.register_primitive(
+        "tract_core_scale",
+        &[TypeName::Scalar.tensor().named("scale"), TypeName::Any.tensor().named("input")],
+        &[("output", TypeName::Any.tensor())],
+        load_scale,
+    );
     registry.register_dumper(dump_dequantize);
     registry.register_primitive(
         "tract_core_dequantize_linear",
@@ -35,6 +45,27 @@ pub fn register(registry: &mut Registry) {
             load,
         );
     }
+}
+
+fn load_scale(builder: &mut ModelBuilder, invocation: &ResolvedInvocation) -> TractResult<Value> {
+    let factor = invocation.named_arg_as(builder, "scale")?;
+    let input = invocation.named_arg_as(builder, "input")?;
+    builder.wire(scale(), &[factor, input])
+}
+
+fn dump_scale(
+    ast: &mut IntoAst,
+    node: &TypedNode,
+    op: &TypedBinOp,
+) -> TractResult<Option<Arc<RValue>>> {
+    if op.0.downcast_ref::<Scale>().is_none() {
+        return Ok(None);
+    }
+    Ok(Some(invocation(
+        "tract_core_scale",
+        &[ast.mapping[&node.inputs[0]].clone(), ast.mapping[&node.inputs[1]].clone()],
+        &[],
+    )))
 }
 
 fn load_dequantize(

@@ -1,4 +1,4 @@
-"""Generate small Microsoft/STFT regressions with ONNX Runtime CPU reference outputs."""
+"""Generate regressions with ONNX Runtime references and a float64 DFT for frame-20 STFT."""
 
 from itertools import product
 from pathlib import Path
@@ -11,7 +11,7 @@ from onnx import helper, numpy_helper
 ROOT = Path(__file__).resolve().parent
 
 
-def save(name, inputs, nodes, constants, dynamic=False, output_names=None):
+def save(name, inputs, nodes, constants, dynamic=False, output_names=None, reference=None):
     output_names = output_names or [n.output[0] for n in nodes]
     graph = helper.make_graph(
         nodes, name,
@@ -37,8 +37,9 @@ def save(name, inputs, nodes, constants, dynamic=False, output_names=None):
             for i in ([2, 5, 7] if arity == 8 else [2, 4]):
                 if not node.input[i]:
                     node.input[i] = "default_zero"
-    session = ort.InferenceSession(reference_model.SerializeToString(), options, providers=["CPUExecutionProvider"])
-    reference = session.run(None, inputs)
+    if reference is None:
+        session = ort.InferenceSession(reference_model.SerializeToString(), options, providers=["CPUExecutionProvider"])
+        reference = session.run(None, inputs)
     del model.graph.output[:]
     for output_name, value in zip(output_names, reference):
         model.graph.output.append(helper.make_tensor_value_info(output_name, numpy_helper.from_array(value).data_type, [None] * value.ndim if dynamic else value.shape))
@@ -113,6 +114,36 @@ def stft():
             name = f"stft_{key}_{int(window)}"
             nodes.append(helper.make_node("STFT", [key, "step", "window" if window else "", "length"], [name], name=name, onesided=int(key != "complex")))
     save("stft_real_rank2", inputs, nodes, c)
+
+
+def stft_frame20():
+    rng = np.random.default_rng(20)
+    x = rng.uniform(-0.125, 0.125, (2, 53)).astype(np.float32)
+    inputs = {"x": x, "real": x[..., None], "complex": np.stack([x, -x / 2], axis=-1)}
+    constants = {"step": np.array(5, np.int64), "length": np.array(20, np.int64),
+                 "window": np.hanning(20).astype(np.float32)}
+    nodes = []
+    for key in inputs:
+        for window in ["", "window"]:
+            name = f"stft20_{key}_{window or 'unwindowed'}"
+            nodes.append(helper.make_node("STFT", [key, "step", window, "length"], [name], name=name, onesided=int(key != "complex")))
+    references = []
+    for node in nodes:
+        value = inputs[node.input[0]]
+        if value.ndim == 2:
+            value = value[..., None]
+        frames = np.stack([value[:, i:i + 20] for i in range(0, 34, 5)], axis=1)
+        window = constants[node.input[2]] if node.input[2] else np.ones(20, np.float32)
+        frames = frames * window[None, None, :, None]
+        signal = frames[..., 0].astype(np.complex128)
+        if frames.shape[-1] == 2:
+            signal += 1j * frames[..., 1]
+        spectrum = np.fft.fft(signal, axis=-1)
+        if value.shape[-1] == 1:
+            spectrum = spectrum[..., :11]
+        reference = np.stack([spectrum.real, spectrum.imag], axis=-1).astype(np.float32)
+        references.append(reference)
+    save("stft_frame20", inputs, nodes, constants, reference=references)
 
 
 def quantized_matmul():
@@ -287,6 +318,51 @@ def dynamic_quantize_nan():
          [helper.make_node("DynamicQuantizeLinear", ["x"], ["y", "scale", "zero"])], {}, output_names=["y", "scale", "zero"])
 
 
+def dynamic_quantize_batch():
+    rng = np.random.default_rng(255)
+    x = rng.uniform(-3, 5, (2053, 3)).astype(np.float32)
+    nodes = [helper.make_node("DynamicQuantizeLinear", ["x"], ["y", "scale", "zero"])]
+    save("dynamic_quantize_batch", {"x": x}, nodes, {}, output_names=["y", "scale", "zero"])
+    x = np.empty((0, 3), np.float32)
+    save("dynamic_quantize_empty", {"x": x}, nodes, {}, output_names=["y", "scale", "zero"],
+         reference=[np.empty((0, 3), np.uint8), np.array(1, np.float32), np.array(0, np.uint8)])
+
+
+def integer_matmul_batches():
+    rng = np.random.default_rng(32)
+    inputs, nodes = {}, []
+    for adt, bdt in product([np.int8, np.uint8], repeat=2):
+        name = np.dtype(adt).name + "_" + np.dtype(bdt).name
+        inputs[name + "a"] = rng.integers(np.iinfo(adt).min, np.iinfo(adt).max + 1, (17, 33), dtype=adt)
+        inputs[name + "b"] = rng.integers(np.iinfo(bdt).min, np.iinfo(bdt).max + 1, (33, 19), dtype=bdt)
+        inputs[name + "az"] = np.arange(17, dtype=adt)
+        inputs[name + "bz"] = np.arange(19, dtype=bdt)
+        for az, bz in product([False, True], repeat=2):
+            output = name + str(int(az)) + str(int(bz))
+            args = [name + "a", name + "b", name + "az" if az else "", name + "bz" if bz else ""]
+            nodes.append(helper.make_node("MatMulInteger", args, [output]))
+    inputs["batcha"] = rng.integers(0, 256, (2, 3, 17, 33), dtype=np.uint8)
+    inputs["batchb"] = rng.integers(-128, 128, (1, 3, 33, 19), dtype=np.int8)
+    nodes.append(helper.make_node("MatMulInteger", ["batcha", "batchb"], ["batch_output"]))
+    inputs["largea"] = np.full((1, 1025), 255, np.uint8)
+    inputs["largeb"] = np.full((1025, 1), 255, np.uint8)
+    nodes.append(helper.make_node("MatMulInteger", ["largea", "largeb"], ["large_output"]))
+    references = []
+    for node in nodes:
+        a, b = [inputs[name].astype(np.int64) for name in node.input[:2]]
+        if len(node.input) > 2 and node.input[2]:
+            a = a - inputs[node.input[2]].astype(np.int64)[:, None]
+        if len(node.input) > 3 and node.input[3]:
+            b = b - inputs[node.input[3]].astype(np.int64)
+        references.append(np.matmul(a, b).astype(np.int32))
+    save("integer_matmul_batches", inputs, nodes, {}, reference=references)
+    save("integer_matmul_constant", {"offset": np.array(0, np.int32)}, [
+        helper.make_node("MatMulInteger", ["a", "b"], ["product"]),
+        helper.make_node("Add", ["product", "offset"], ["output"]),
+    ], {"a": inputs["largea"], "b": inputs["largeb"]}, output_names=["output"],
+         reference=[np.array([[65025 * 1025]], np.int32)])
+
+
 def symbolic_deconv():
     inputs = {"end": np.array(5, np.int64)}
     constants = {"start": np.array(0, np.int64), "step": np.array(1, np.int64), "axes": np.array([0, 1], np.int64), "kernel": np.array([[[1., 2., 3.]]], np.float32), "bias": np.array([0.5], np.float32)}
@@ -324,6 +400,7 @@ if __name__ == "__main__":
     quantized()
     matmul()
     stft()
+    stft_frame20()
     dynamic_range()
     quantized_matmul()
     symbolic_slice()
@@ -340,6 +417,8 @@ if __name__ == "__main__":
     gelu_tails()
     folded_gather_shape()
     dynamic_quantize_nan()
+    dynamic_quantize_batch()
+    integer_matmul_batches()
     symbolic_deconv()
     symbolic_cumsum()
     quantized_conv_nhwc()

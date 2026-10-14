@@ -103,6 +103,10 @@ impl MetalContext {
             }
         }
         let mut cache_libraries = self.cache_libraries.write().map_err(|e| anyhow!("{:?}", e))?;
+        let options = CompileOptions::new();
+        if name == LibraryName::Quantize {
+            options.set_fast_math_enabled(false);
+        }
         let library = match name.content() {
             LibraryContent::Data(lib_data) => self
                 .device
@@ -113,7 +117,7 @@ impl MetalContext {
                 })?,
             LibraryContent::Source(lib_source) => self
                 .device
-                .new_library_with_source(lib_source, &CompileOptions::new())
+                .new_library_with_source(lib_source, &options)
                 .map_err(|e| anyhow!("{}", e))
                 .with_context(|| {
                     format!("Error while loading Metal library from source: {:?}", name)

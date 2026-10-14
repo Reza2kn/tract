@@ -1,5 +1,8 @@
 #![allow(clippy::unnecessary_cast)]
 
+mod dynamic;
+pub use dynamic::DynamicQuantizeLinearU8;
+
 use crate::internal::*;
 use crate::ops::element_wise::ElementWiseOp;
 use crate::ops::math::QScale;
@@ -363,6 +366,9 @@ pub(crate) fn scale_by<T: Datum + AsPrimitive<f32>>(b: T, a: f32) -> T
 where
     f32: AsPrimitive<T>,
 {
+    if a == 1. && !T::datum_type().is_float() {
+        return b;
+    }
     let b = b.as_();
     (round_ties_to_even(b.abs() * a) * b.signum()).as_()
 }

@@ -60,6 +60,12 @@ fn main() -> Result<()> {
             "Expected 1 x (2..512) tokens, including boundary tokens"
         );
         ensure!(
+            tokens[[0, 0]] == 0
+                && tokens[[0, tokens.shape()[1] - 1]] == 0
+                && tokens.iter().skip(1).take(tokens.len() - 2).all(|token| *token > 0),
+            "Expected zero boundary tokens and positive phoneme IDs"
+        );
+        ensure!(
             style.shape() == [1, 256] && style.iter().all(|v| v.is_finite()),
             "Expected a finite 1 x 256 voice style"
         );
@@ -79,6 +85,7 @@ fn main() -> Result<()> {
         let output = model.run([tokens, style, speed])?;
         let elapsed = start.elapsed();
         let (shape, audio) = output[0].as_shape_and_slice::<f32>()?;
+        ensure!(!audio.is_empty(), "Model produced empty audio");
         ensure!(audio.iter().all(|v| v.is_finite()), "Model produced non-finite audio");
         let mut bundle = NpzWriter::new_compressed(File::create(&paths[1])?);
         bundle.add_array("audio", &ArrayViewD::from_shape(shape, audio)?)?;
