@@ -3,6 +3,7 @@ use tract_hir::internal::*;
 use tract_onnx::pb::*;
 
 mod convolution;
+mod dynamic_lstm;
 mod dynamic_quantize;
 mod fused_matmul;
 mod integer_matmul;
@@ -15,6 +16,7 @@ pub fn suite() -> TestSuite {
         .with("integer_matmul", integer_matmul::suite())
         .with("fused_matmul", fused_matmul::suite())
         .with("quantized", quantized::suite())
+        .with("dynamic_lstm", dynamic_lstm::suite())
 }
 
 fn proto(name: &str, tensor: &Tensor) -> TensorProto {
@@ -63,6 +65,9 @@ fn int_attr(name: &str, i: i64) -> AttributeProto {
 }
 fn float_attr(name: &str, f: f32) -> AttributeProto {
     AttributeProto { name: name.into(), r#type: 1, f, ..Default::default() }
+}
+fn string_attr(name: &str, s: &str) -> AttributeProto {
+    AttributeProto { name: name.into(), r#type: 3, s: s.as_bytes().to_vec(), ..Default::default() }
 }
 
 /// Imports an ONNX operator and checks it through the selected runtime, including NNEF runtimes.

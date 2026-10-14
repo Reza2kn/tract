@@ -81,18 +81,18 @@ impl CommonRec {
         let r_fact = target.outlet_fact(inputs[2])?.clone();
 
         if let Some(seqlen) = self.optional_sequence_lens_input {
-            let Some(seqlen) = &target.outlet_fact(inputs[seqlen])?.konst else {
-                bail!("Non constant seq_len is not supported");
-            };
-            let Some(seqlen) = seqlen.as_uniform() else {
-                bail!("Non uniform seq_len is not supported");
-            };
-            let seqlen = seqlen.cast_to::<TDim>()?;
-            if seqlen.try_as_plain_ram()?.to_scalar::<TDim>()?
-                != &x_fact.shape[self.batch_first as usize]
-            {
-                bail!("seq_len only supported for trivial noop case");
-            };
+            let fact = target.outlet_fact(inputs[seqlen])?;
+            let seq = &x_fact.shape[self.batch_first as usize];
+            let full = fact.uniform_tdim.as_ref() == Some(seq)
+                || fact.konst.as_ref().is_some_and(|lengths| {
+                    lengths.cast_to::<TDim>().ok().is_some_and(|lengths| {
+                        lengths
+                            .to_plain_array_view::<TDim>()
+                            .ok()
+                            .is_some_and(|lengths| lengths.iter().all(|n| n == seq))
+                    })
+                });
+            ensure!(full, "seq_len only supported for full-length sequences");
         }
 
         let b_size = &x_fact.shape[1 - self.batch_first as usize];

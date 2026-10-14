@@ -3,6 +3,7 @@ use infra::TestSuite;
 use std::path::PathBuf;
 use tract_hir::internal::Approximation;
 
+mod dynamic_lstm;
 mod nnef_contracts;
 mod quantized_ops;
 
@@ -10,6 +11,7 @@ mod quantized_ops;
 pub fn suite() -> TestSuite {
     TestSuite::default()
         .with("quantized_ops", quantized_ops::suite())
+        .with("dynamic_lstm", dynamic_lstm::suite())
         .with("nnef_contracts", nnef_contracts::suite())
 }
 
