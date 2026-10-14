@@ -4518,6 +4518,7 @@ dependencies = [
  "proptest",
  "prost",
  "regex",
+ "serde_json",
  "tract-core",
  "tract-hir",
  "tract-onnx",

@@ -1,5 +1,8 @@
 #![allow(clippy::unnecessary_cast)]
 
+mod dynamic;
+pub use dynamic::DynamicQuantizeLinearU8;
+
 use crate::internal::*;
 use crate::ops::element_wise::ElementWiseOp;
 use crate::ops::math::QScale;
@@ -11,13 +14,15 @@ use tract_linalg::mmm::RoundingPolicy;
 use super::binary::TypedBinOp;
 use super::math::round_ties_to_even;
 
+/// Quantize with an inverse scale, nearest-even rounding, and saturation; NaN maps to the minimum.
 pub fn quantize_linear_f32_u8(x: f32, scale: f32, zero_point: i32) -> u8 {
-    ((round_ties_to_even(x * scale) as i32) + zero_point).clamp(u8::MIN as i32, u8::MAX as i32)
+    (round_ties_to_even(x * scale) + zero_point as f32).max(u8::MIN as f32).min(u8::MAX as f32)
         as u8
 }
 
+/// Quantize with an inverse scale, nearest-even rounding, and saturation; NaN maps to the minimum.
 pub fn quantize_linear_f32_i8(x: f32, scale: f32, zero_point: i32) -> i8 {
-    ((round_ties_to_even(x * scale) as i32) + zero_point).clamp(i8::MIN as i32, i8::MAX as i32)
+    (round_ties_to_even(x * scale) + zero_point as f32).max(i8::MIN as f32).min(i8::MAX as f32)
         as i8
 }
 
@@ -361,6 +366,9 @@ pub(crate) fn scale_by<T: Datum + AsPrimitive<f32>>(b: T, a: f32) -> T
 where
     f32: AsPrimitive<T>,
 {
+    if a == 1. && !T::datum_type().is_float() {
+        return b;
+    }
     let b = b.as_();
     (round_ties_to_even(b.abs() * a) * b.signum()).as_()
 }

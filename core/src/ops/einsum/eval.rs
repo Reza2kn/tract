@@ -151,13 +151,14 @@ pub fn eval_t<Acc: Datum + Zero + One>(
     Ok(output.into_tensor())
 }
 
+/// Evaluates a nine-input quantized einsum, retaining integer arithmetic for unit-scaled I32 products.
 pub fn eval_q(expr: &AxesMapping, qp: DatumType, inputs: TVec<TValue>) -> TractResult<Tensor> {
-    fn reshape_param<'a>(
+    fn reshape_param<'a, T: Datum>(
         expr: &AxesMapping,
         data_slot: InOut,
         qp: &'a Tensor,
         qp_slot: InOut,
-    ) -> TractResult<ArrayViewD<'a, f32>> {
+    ) -> TractResult<ArrayViewD<'a, T>> {
         if qp.rank() == 0 {
             qp.try_as_plain_ram()?.to_array_view()
         } else {
@@ -175,6 +176,29 @@ pub fn eval_q(expr: &AxesMapping, qp: DatumType, inputs: TVec<TValue>) -> TractR
     let [a, b, bias, a0, a_scale, b0, b_scale, c0, c_scale] = &*inputs else {
         bail!("Expect exactly 9 inputs")
     };
+
+    if qp == DatumType::I32
+        && [a, b].iter().all(|input| matches!(input.datum_type(), DatumType::I8 | DatumType::U8))
+        && [a_scale, b_scale, c_scale]
+            .iter()
+            .all(|scale| scale.cast_to_scalar::<f32>().ok() == Some(1.))
+        && bias.datum_type() == DatumType::I32
+        && c0.datum_type() == DatumType::I32
+        && bias.cast_to_scalar::<i32>().ok() == Some(0)
+        && c0.cast_to_scalar::<i32>().ok() == Some(0)
+    {
+        let mut a = a.cast_to::<i32>()?.into_owned();
+        let mut b = b.cast_to::<i32>()?.into_owned();
+        let a0 = a0.cast_to::<i32>()?;
+        let b0 = b0.cast_to::<i32>()?;
+        Zip::from(a.to_plain_array_view_mut::<i32>()?)
+            .and_broadcast(reshape_param::<i32>(expr, InOut::In(0), &a0, InOut::In(3))?)
+            .for_each(|a, a0| *a -= *a0);
+        Zip::from(b.to_plain_array_view_mut::<i32>()?)
+            .and_broadcast(reshape_param::<i32>(expr, InOut::In(1), &b0, InOut::In(5))?)
+            .for_each(|b, b0| *b -= *b0);
+        return eval_t::<i32>(expr, tvec!(a.into_tvalue(), b.into_tvalue()));
+    }
 
     let mut a = a.cast_to::<i32>()?.cast_to::<f32>()?.into_owned();
     let mut b = b.cast_to::<i32>()?.cast_to::<f32>()?.into_owned();
@@ -195,24 +219,24 @@ pub fn eval_q(expr: &AxesMapping, qp: DatumType, inputs: TVec<TValue>) -> TractR
     ensure!(bias.rank() < 2);
 
     Zip::from(a.to_plain_array_view_mut::<f32>()?)
-        .and_broadcast(reshape_param(expr, InOut::In(0), &a0, InOut::In(3))?)
-        .and_broadcast(reshape_param(expr, InOut::In(0), &a_scale, InOut::In(4))?)
+        .and_broadcast(reshape_param::<f32>(expr, InOut::In(0), &a0, InOut::In(3))?)
+        .and_broadcast(reshape_param::<f32>(expr, InOut::In(0), &a_scale, InOut::In(4))?)
         .for_each(|a, a0, a_scale| *a = a_scale * (*a - a0));
 
     Zip::from(b.to_plain_array_view_mut::<f32>()?)
-        .and_broadcast(reshape_param(expr, InOut::In(1), &b0, InOut::In(5))?)
-        .and_broadcast(reshape_param(expr, InOut::In(1), &b_scale, InOut::In(6))?)
+        .and_broadcast(reshape_param::<f32>(expr, InOut::In(1), &b0, InOut::In(5))?)
+        .and_broadcast(reshape_param::<f32>(expr, InOut::In(1), &b_scale, InOut::In(6))?)
         .for_each(|b, b0, b_scale| *b = b_scale * (*b - b0));
 
     let mut output =
         eval_t::<f32>(expr, tvec!(a.into_tvalue(), b.into_tvalue()))?.into_plain_array::<f32>()?;
 
     Zip::from(&mut output)
-        .and_broadcast(reshape_param(expr, InOut::Out(0), &bias, InOut::In(2))?)
-        .and_broadcast(reshape_param(expr, InOut::Out(0), &c0, InOut::In(7))?)
-        .and_broadcast(reshape_param(expr, InOut::Out(0), &c_scale, InOut::In(8))?)
-        .and_broadcast(reshape_param(expr, InOut::Out(0), &a_scale, InOut::In(4))?)
-        .and_broadcast(reshape_param(expr, InOut::Out(0), &b_scale, InOut::In(6))?)
+        .and_broadcast(reshape_param::<f32>(expr, InOut::Out(0), &bias, InOut::In(2))?)
+        .and_broadcast(reshape_param::<f32>(expr, InOut::Out(0), &c0, InOut::In(7))?)
+        .and_broadcast(reshape_param::<f32>(expr, InOut::Out(0), &c_scale, InOut::In(8))?)
+        .and_broadcast(reshape_param::<f32>(expr, InOut::Out(0), &a_scale, InOut::In(4))?)
+        .and_broadcast(reshape_param::<f32>(expr, InOut::Out(0), &b_scale, InOut::In(6))?)
         .for_each(|c, bias, c0, c_scale, a_scale, b_scale| {
             *c = ((*c + bias * a_scale * b_scale) / c_scale + c0).round()
         });

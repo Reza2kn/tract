@@ -251,6 +251,29 @@ where
     }
 }
 
+#[derive(Clone)]
+struct IntegerUnitScale;
+
+impl Test for IntegerUnitScale {
+    fn run_with_approx(
+        &self,
+        _id: &str,
+        runtime: &dyn Runtime,
+        _approx: Approximation,
+    ) -> TestResult {
+        let values = tensor1(&[16_777_217i32, -16_777_217, 66_650_625, i32::MAX, i32::MIN]);
+        let mut model = TypedModel::default();
+        let scale = model.add_source("scale", f32::fact([5]))?;
+        let input = model.add_source("input", i32::fact([5]))?;
+        let output = model.wire_node("scaled", tract_core::ops::quant::scale(), &[scale, input])?;
+        model.select_output_outlets(&output)?;
+        let output = runtime
+            .prepare(model)?
+            .run(tvec!(tensor1(&[1f32; 5]).into_tvalue(), values.clone().into_tvalue()))?;
+        output[0].close_enough(&values, Approximation::Exact)
+    }
+}
+
 pub fn suite() -> TractResult<TestSuite> {
     let mut suite = TestSuite::default();
 
@@ -261,6 +284,7 @@ pub fn suite() -> TractResult<TestSuite> {
     suite.add_arbitrary::<BinaryOpProblem<u32>>("proptest_u32", ());
     suite.add_arbitrary::<BinaryOpProblem<i16>>("proptest_i16", ());
     suite.add_arbitrary::<BinaryOpProblem<i64>>("proptest_i64", ());
+    suite.add("integer_unit_scale", IntegerUnitScale);
 
     Ok(suite)
 }
