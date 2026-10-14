@@ -709,9 +709,6 @@ impl Parameters {
             m.analyse(!matches.get_flag("analyse-fail-fast")).map_err(|e|
                                                                         ModelBuildingError(Box::new(m.clone()), e.into())
                                                                        )?;
-            if let Some(fail) = m.missing_type_shape()?.first() {
-                bail!(ModelBuildingError(Box::new(m.clone()), format!("{} has incomplete typing", m.node(fail.node)).into()))
-            }
             Ok(m)
         });
         if let Some(ext) = tf_model_extensions {

@@ -1398,6 +1398,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-kokoro-onnx"
+version = "0.23.9-pre"
+dependencies = [
+ "anyhow",
+ "ndarray",
+ "ndarray-npy",
+ "tract",
+]
+
+[[package]]
 name = "example-nnef-mobilenet-v2"
 version = "0.20.7-pre"
 dependencies = [
