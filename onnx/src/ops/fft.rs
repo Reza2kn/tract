@@ -392,7 +392,10 @@ impl Expansion for Stft {
         )?;
         check_output_arity(outputs, 1)?;
         s.equals(&inputs[0].datum_type, &outputs[0].datum_type)?;
-        s.equals(&inputs[0].rank, 3)?;
+        s.given(&inputs[0].rank, |_, rank| {
+            ensure!(rank == 2 || rank == 3, "STFT expects a rank-2 or rank-3 signal");
+            Ok(())
+        })?;
         s.equals(&outputs[0].rank, 4)?;
         s.equals(&outputs[0].shape[0], &inputs[0].shape[0])?;
         s.equals(&outputs[0].shape[3], 2.to_dim())?;
@@ -442,6 +445,13 @@ impl Expansion for Stft {
     ) -> TractResult<TVec<OutletId>> {
         let fact = model.outlet_fact(inputs[0])?.clone();
         let mut wire: TVec<OutletId> = tvec!(inputs[0]);
+        if fact.rank() == 2 {
+            wire = model.wire_node(
+                format!("{prefix}.real_axis"),
+                tract_core::ops::change_axes::AxisOp::Add(2),
+                &wire,
+            )?;
+        }
         let (frame, window) = if let Some(w) = self.optional_window_input {
             let window = model
                 .outlet_fact(inputs[w])?
@@ -466,12 +476,17 @@ impl Expansion for Stft {
             .as_ref()
             .context("STFT expects a constant frame_step")?
             .cast_to_scalar::<i64>()? as usize;
-        if fact.shape.last() == Some(&1.to_dim()) {
-            let mut pads = vec![(0, 0); fact.rank() - 1];
+        if model.outlet_fact(wire[0])?.shape.last() == Some(&1.to_dim()) {
+            let mut pads = vec![(0, 0); 2];
             pads.push((0, 1));
             wire = model.wire_node(
                 format!("{prefix}.add_imaginary"),
-                Pad { mode: tract_hir::ops::array::PadMode::Constant(rctensor0(0f32)), pads },
+                Pad {
+                    mode: tract_hir::ops::array::PadMode::Constant(
+                        tensor0(0f32).cast_to_dt(fact.datum_type)?.into_owned().into_arc_tensor(),
+                    ),
+                    pads,
+                },
                 &wire,
             )?;
         };

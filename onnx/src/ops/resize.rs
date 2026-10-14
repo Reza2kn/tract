@@ -147,6 +147,18 @@ impl Expansion for ResizeInference {
         model: &mut TypedModel,
         inputs: &[OutletId],
     ) -> TractResult<TVec<OutletId>> {
+        let facts =
+            inputs.iter().map(|i| model.outlet_fact(*i)).collect::<TractResult<Vec<_>>>()?;
+        if let Some(scales) = self.0.optional_scales_input.and_then(|i| facts[i].konst.as_deref())
+            && self.0.compute_output_shape(&facts[0].shape, Some(scales), None).is_err()
+        {
+            let shape = symbolic_reciprocal_shape(&self.0, &facts[0].shape, scales)?;
+            return model.wire_node(
+                name,
+                SymbolicScaleResize { resize: self.0.clone(), shape: shape.into() },
+                inputs,
+            );
+        }
         model.wire_node(name, self.0.clone(), inputs)
     }
 }
@@ -165,13 +177,81 @@ fn rules_with_scales<'r, 'p: 'r, 's: 'r>(
         s.equals(&scales.shape[0], op.resized_axes(rank as usize)?.len().to_dim())
     })?;
     s.given_2(&inputs[0].shape, &inputs[scales_input].value, move |s, input_shape, scales| {
-        let output_size = op.compute_output_shape(&input_shape, Some(scales.as_ref()), None)?;
+        let output_size = op
+            .compute_output_shape(&input_shape, Some(scales.as_ref()), None)
+            .or_else(|_| symbolic_reciprocal_shape(op, &input_shape, &scales))?;
         let rank = input_shape.len();
         for i in 0..rank {
             s.equals(&outputs[0].shape[i], output_size[i].to_dim())?;
         }
         Ok(())
     })
+}
+
+/// Infers integer-reciprocal scaling of symbolic dimensions. The typed operator checks
+/// the resulting contract against floating-point output-size calculation at runtime.
+fn symbolic_reciprocal_shape(
+    op: &Resize,
+    input: &[TDim],
+    scales: &Tensor,
+) -> TractResult<TVec<TDim>> {
+    let axes = op.resized_axes(input.len())?;
+    let scales = scales.cast_to::<f32>()?;
+    let scales = scales.try_as_plain_ram()?.as_slice::<f32>()?;
+    ensure!(scales.len() == axes.len(), "Resize scales length must match axes");
+    let mut shape: TVec<_> = input.into();
+    for (&axis, &scale) in axes.iter().zip(scales) {
+        ensure!(scale.is_finite() && scale > 0., "Resize scales must be finite and positive");
+        shape[axis] = if let Some(dim) = input[axis].as_usize() {
+            ((dim as f32 * scale) as usize).to_dim()
+        } else if scale.fract() == 0. {
+            input[axis].clone() * scale as usize
+        } else {
+            let reciprocal = scale.recip();
+            ensure!(
+                reciprocal.is_finite() && reciprocal.fract() == 0. && reciprocal >= 1.,
+                "Unsupported symbolic Resize scale {scale}"
+            );
+            input[axis].clone() / reciprocal as usize
+        };
+    }
+    Ok(shape)
+}
+
+/// Resize with integer-reciprocal scales and a symbolic output shape. Floating-point
+/// rounding that disagrees with the inferred dimensions is rejected before consumers run.
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+struct SymbolicScaleResize {
+    resize: Resize,
+    shape: ShapeFact,
+}
+
+impl Op for SymbolicScaleResize {
+    fn name(&self) -> StaticName {
+        "SymbolicScaleResize".into()
+    }
+    op_as_typed_op!();
+}
+
+impl EvalOp for SymbolicScaleResize {
+    op_out_of_plan!();
+    fn eval(&self, ctx: &EvalContext, inputs: TVec<TValue>) -> TractResult<TVec<TValue>> {
+        let expected = self.shape.eval_to_usize(ctx.symbols)?;
+        let output = self.resize.eval(ctx, inputs)?;
+        ensure!(
+            output[0].shape() == expected.as_slice(),
+            "Resize floating-point output shape {:?} differs from symbolic contract {expected:?}",
+            output[0].shape()
+        );
+        Ok(output)
+    }
+}
+
+impl TypedOp for SymbolicScaleResize {
+    fn output_facts(&self, inputs: &[&TypedFact]) -> TractResult<TVec<TypedFact>> {
+        Ok(tvec!(inputs[0].datum_type.fact(self.shape.clone())))
+    }
+    as_op!();
 }
 
 fn rules_with_sizes<'r, 'p: 'r, 's: 'r>(

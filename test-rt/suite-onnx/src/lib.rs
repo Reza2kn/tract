@@ -47,6 +47,32 @@ struct OnnxTestCase {
     exact: bool,
 }
 
+#[derive(Clone)]
+struct ExpectedFailure {
+    case: OnnxTestCase,
+    message: &'static str,
+}
+
+impl Test for ExpectedFailure {
+    fn run_with_approx(
+        &self,
+        id: &'static str,
+        runtime: &dyn Runtime,
+        approx: Approximation,
+    ) -> TractResult<()> {
+        match self.case.run_with_approx(id, runtime, approx) {
+            Err(error) => {
+                ensure!(
+                    format!("{error:#}").contains(self.message),
+                    "Unexpected failure: {error:#}"
+                );
+                Ok(())
+            }
+            Ok(()) => bail!("Expected failure containing {:?}", self.message),
+        }
+    }
+}
+
 impl Test for OnnxTestCase {
     fn run_with_approx(
         &self,
@@ -316,6 +342,44 @@ fn full() -> TestSuite {
         );
     }
     suite.add("quantized_convolution", quantized_convolution);
+    let mut kokoro_ops = TestSuite::default();
+    for name in [
+        "quantized_uint8",
+        "quantized_int8",
+        "fused_matmul",
+        "stft_real_rank2",
+        "dynamic_range_resize",
+        "quantized_matmul_axes",
+        "symbolic_slice_bounds",
+    ] {
+        kokoro_ops.add(
+            name,
+            OnnxTestCase {
+                path: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("test-cases/kokoro-ops")
+                    .join(name),
+                ignore_output_type: false,
+                ignore_output_shapes: false,
+                input: None,
+                exact: name != "stft_real_rank2",
+            },
+        );
+    }
+    suite.add("kokoro_ops", kokoro_ops);
+    suite.add(
+        "symbolic_resize_precision_guard",
+        ExpectedFailure {
+            case: OnnxTestCase {
+                path: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("test-cases/kokoro-ops/symbolic_resize_precision_guard"),
+                ignore_output_type: false,
+                ignore_output_shapes: false,
+                input: None,
+                exact: false,
+            },
+            message: "differs from symbolic contract",
+        },
+    );
     suite
 }
 
