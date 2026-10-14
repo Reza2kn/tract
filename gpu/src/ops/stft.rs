@@ -16,8 +16,8 @@ pub fn is_supported_frame(frame: usize) -> bool {
 /// from the output shape (`output[axis + 1]`).
 pub type DispatchStftFn = fn(usize, &DeviceTensor, &DeviceTensor, &DeviceTensor) -> TractResult<()>;
 
-/// Backend-agnostic fused STFT (frame + window + forward FFT). `frame` is a supported
-/// power of two ([`SUPPORTED_FRAMES`]); the window is pre-padded to `[frame]` (all-ones
+/// Backend-agnostic fused STFT (frame + window + forward FFT). `frame` must be supported
+/// by the supplied backend dispatcher; the window is pre-padded to `[frame]` (all-ones
 /// when the source had none), matching `core::ops::fft::Stft`'s symmetric padding. The
 /// time axis must sit just before the trailing complex pair (`axis == rank - 2`). Each
 /// backend supplies its own `dispatch` kernel; everything else (facts, output allocation,

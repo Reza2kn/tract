@@ -4,9 +4,11 @@ pub mod array;
 pub mod bin_ops;
 pub mod causal_conv1d_update;
 pub mod conv;
+pub mod dynamic_quant;
 pub mod element_wise;
 pub mod fft;
 pub mod gdn_recurrent;
+pub mod integer_matmul;
 pub mod matmul;
 pub mod nn;
 mod utils;
@@ -37,6 +39,8 @@ const MLX_CONV: &str = include_str!("conv/mlx_conv.metal");
 const MLX_CONV_DW: &str = include_str!("conv/mlx_conv_dw.metal");
 const ELEMENT_WISE_OPS: &str = include_str!("element_wise.metal");
 const FFT_OPS: &str = include_str!("fft.metal");
+const QUANTIZE_OPS: &str = include_str!("dynamic_quant.metal");
+const INTEGER_MATMUL_OPS: &str = include_str!("integer_matmul.metal");
 const GDN_RECURRENT: &str = include_str!("gdn_recurrent.metal");
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -61,6 +65,8 @@ pub enum LibraryName {
     ElementWiseOps,
     Ggml,
     Fft,
+    Quantize,
+    IntegerMatMul,
     GdnRecurrent,
 }
 
@@ -81,6 +87,8 @@ impl LibraryName {
             Self::MlxSdpa => LibraryContent::Source(MLX_SDPA),
             Self::Ggml => LibraryContent::Source(GGML),
             Self::Fft => LibraryContent::Source(FFT_OPS),
+            Self::Quantize => LibraryContent::Source(QUANTIZE_OPS),
+            Self::IntegerMatMul => LibraryContent::Source(INTEGER_MATMUL_OPS),
             Self::GdnRecurrent => LibraryContent::Source(GDN_RECURRENT),
         }
     }
